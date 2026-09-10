@@ -1,0 +1,16 @@
+.git
+.gitea
+.env
+.env.*
+!.env.example
+target
+# The workflows write a cargo source replacement here for their own cargo
+# steps, and the image writes its own from the build argument. Carried in, the
+# Dockerfile would append a second [source.crates-io] to the runner's copy and
+# cargo would refuse the duplicate key. Only this file is excluded - the rest
+# of .cargo/ is committed configuration that belongs to the repository.
+.cargo/config.toml
+*.pem
+*.key
+**/__pycache__
+*.pyc

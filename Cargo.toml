@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/infisical-api",
+    "crates/infisical-mcp",
+    "crates/infisical-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://gitea.cacahuate.org/bennight/mcp-infisical-rs"
+
+[workspace.dependencies]
+anyhow = "1"
+aws-lc-rs = { version = "=1.17.3", features = ["unstable"] }
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+futures-util = { version = "0.3", default-features = false }
+fips205 = { version = "=0.4.1", default-features = false, features = [
+    "slh_dsa_sha2_128f",
+    "slh_dsa_sha2_128s",
+    "slh_dsa_sha2_192f",
+    "slh_dsa_sha2_192s",
+    "slh_dsa_sha2_256f",
+    "slh_dsa_sha2_256s",
+    "slh_dsa_shake_128f",
+    "slh_dsa_shake_128s",
+    "slh_dsa_shake_192f",
+    "slh_dsa_shake_192s",
+    "slh_dsa_shake_256f",
+    "slh_dsa_shake_256s",
+] }
+infisical-api = { path = "crates/infisical-api" }
+infisical-mcp = { path = "crates/infisical-mcp" }
+jsonschema = { version = "0.52", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+pem-rfc7468 = { version = "=0.7.0", features = ["std"] }
+pkcs8 = "=0.10.2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+rmcp = { version = "2.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rustls-pki-types = "=1.15.0"
+rustls-webpki = "=0.103.13"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ssh-key = { version = "=0.6.7", default-features = false, features = ["ed25519", "p256", "p384", "rsa", "std"] }
+subtle = "2.6.1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+tower-http = { version = "0.7", features = ["timeout", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+wiremock = "0.6"
+x509-parser = { version = "=0.18.1", features = ["verify-aws"] }
+zeroize = "1.8"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

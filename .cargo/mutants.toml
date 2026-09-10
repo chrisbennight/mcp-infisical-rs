@@ -1,0 +1,3 @@
+# Server integration tests exercise the MCP crate through the real transport,
+# so mutations must run every workspace test rather than only the owning crate.
+test_workspace = true

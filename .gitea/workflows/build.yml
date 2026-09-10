@@ -1,0 +1,296 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-infisical-rs-build-publication
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: gitea.cacahuate.org/bennight/mcp-infisical-rs
+  IMAGE_IMMUTABLE: gitea.cacahuate.org/bennight/mcp-infisical-rs:sha-${{ github.sha }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Ensure cargo is available
+        env:
+          # renovate: datasource=github-tags depName=rust-lang/rustup
+          RUSTUP_INIT_VERSION: "1.29.0"
+          RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+        run: |
+          set -euo pipefail
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/rustup-init \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c -
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path
+            rm -f /tmp/rustup-init
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup component add rustfmt clippy
+          fi
+
+      # These cargo commands run on the runner rather than in an image, so they
+      # see the job environment - but cargo reads no environment variable for a
+      # mirror, so the address still has to become a config file. Written here
+      # rather than committed: a checked-in mirror would be a hard dependency on
+      # a host that resolves only on the LAN.
+      - name: Point cargo at the crate proxy
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured; cargo will use crates.io"
+            exit 0
+          fi
+          mkdir -p .cargo
+          printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+            "${CRATES_INDEX_URL}" >> .cargo/config.toml
+          echo "cargo source replacement written"
+
+      - name: Verify release inputs
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-features --locked
+          cargo doc --workspace --no-deps --locked
+          python3 scripts/check_docs.py
+          python3 scripts/check_api_coverage.py
+          python3 scripts/check_release.py
+          python3 -m unittest discover -s scripts/tests
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_CONFIG: /tmp/mcp-infisical-docker-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_CONTAINER: mcp-infisical-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch registry credential
+        uses: bennight/infisical-secrets-action@b3c3a026c643086539d389c0a7e001eefbf72da0 # v1.0.0
+        with:
+          api-url: https://infisical.cacahuate.org
+          client-id: ${{ vars.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          project-id: b03f80d8-53dd-4cd3-9b09-7f4770dc3ffe
+          secret-path: /bennight/mcp-infisical-rs
+          secrets: GITEATOKEN
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          # A pull request may build without the proxy - it publishes nothing.
+          # A run that does publish must not: an absent value there means the
+          # fleet's injection regressed, and building anyway would push an image
+          # whose crates bypassed the proxy's cache, audit, and blocklist.
+          if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ] \
+             && [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "CRATES_INDEX_URL is unset; refusing to publish an image built outside the artifact proxy" >&2
+            exit 1
+          fi
+          # The runner carries the crate proxy's address; the build cannot see
+          # the job's environment, so it is passed in explicitly. Naming the
+          # argument without its value would forward nothing, and forwarding it
+          # empty would append a source naming an empty registry - so an absent
+          # value means no flag at all, and cargo resolves from crates.io.
+          index_build_args=()
+          if [ -n "${CRATES_INDEX_URL:-}" ]; then
+            index_build_args=(--build-arg "CRATES_INDEX_URL=${CRATES_INDEX_URL}")
+          fi
+          docker build "${index_build_args[@]}" --platform linux/amd64 --tag "$IMAGE_IMMUTABLE" --tag "${IMAGE}:latest" .
+
+      # A build argument that is declared but never reaches cargo looks exactly
+      # like one that works: both leave a green build, because the fallback
+      # resolves from crates.io either way. Pointing it at a closed port
+      # separates them - the builder stage has to fail, and one that succeeds
+      # proves nothing was redirected.
+      #
+      # Skipped rather than passed when the runner supplies no address: with
+      # nothing to redirect, reaching crates.io is the intended behaviour.
+      - name: Check the crate index argument is load-bearing
+        env:
+          CRATES_INDEX_URL: "sparse+http://127.0.0.1:9/index/"
+          IMAGE: gitea.cacahuate.org/bennight/mcp-infisical-rs
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured, so crates.io is the correct source"
+            exit 0
+          fi
+          probe_tag="${IMAGE}:probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          probe_log="$(mktemp)"
+          # Built through the same forwarding the real build uses, with the
+          # address supplied by this step's environment rather than hard-coded
+          # into the command, so the probe exercises that construction too.
+          probe_build_args=()
+          if [ -n "${CRATES_INDEX_URL:-}" ]; then
+            probe_build_args=(--build-arg "CRATES_INDEX_URL=${CRATES_INDEX_URL}")
+          fi
+          if [ ${#probe_build_args[@]} -eq 0 ]; then
+            echo "the probe forwarded nothing; the forwarding construction is broken" >&2
+            exit 1
+          fi
+          if docker build "${probe_build_args[@]}" \
+              --target builder --platform linux/amd64 \
+              --tag "$probe_tag" . >"$probe_log" 2>&1; then
+            docker image rm "$probe_tag" >/dev/null 2>&1 || true
+            echo "the build resolved crates without consulting CRATES_INDEX_URL" >&2
+            exit 1
+          fi
+          # A failure alone proves nothing - a missing base image or a compile
+          # error would fail too. Require the failure to name the unreachable
+          # endpoint, so only a genuine index lookup counts.
+          if ! grep -q "127.0.0.1:9" "$probe_log"; then
+            echo "the probe build failed for an unrelated reason:" >&2
+            tail -40 "$probe_log" >&2
+            exit 1
+          fi
+          echo "cargo failed reaching the unreachable index, as required"
+
+      - name: Inspect runtime image metadata
+        run: |
+          set -euo pipefail
+          configured_user="$(docker image inspect --format '{{.Config.User}}' "$IMAGE_IMMUTABLE")"
+          healthcheck_test="$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$IMAGE_IMMUTABLE")"
+          test "$configured_user" = "nonroot:nonroot"
+          test "$healthcheck_test" = '["CMD","/mcp-infisical-rs","--healthcheck"]'
+
+      - name: Smoke hardened runtime container
+        run: |
+          set -euo pipefail
+          docker run -d --name "$SMOKE_CONTAINER" \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            -e INFISICAL_API_URL=http://127.0.0.1:65534 \
+            -e INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=smoke-client \
+            -e INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=smoke-client-secret \
+            -e INFISICAL_MCP_BEARER_CURRENT=0123456789abcdef0123456789abcdef \
+            -e INFISICAL_MCP_IDENTITY_ISSUER=https://gateway.test \
+            -e INFISICAL_MCP_IDENTITY_JWKS_URL=http://127.0.0.1:65533/jwks \
+            -e INFISICAL_MCP_ALLOWED_HOSTS=infisical-mcp,infisical-mcp:8000 \
+            "${IMAGE}:latest" >/dev/null
+          ready=
+          for _ in $(seq 1 30); do
+            if docker exec "$SMOKE_CONTAINER" /mcp-infisical-rs --healthcheck >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            docker logs "$SMOKE_CONTAINER"
+            exit 1
+          fi
+
+      - name: Cleanup smoke container
+        if: always()
+        run: |
+          set -euo pipefail
+          if docker container inspect "$SMOKE_CONTAINER" >/dev/null 2>&1; then
+            docker rm -f -v "$SMOKE_CONTAINER"
+          fi
+
+      - name: Publish image
+        id: publish
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$DOCKER_CONFIG"
+          printf '%s' "$GITEATOKEN" | docker login gitea.cacahuate.org --username bennight --password-stdin
+          if ! immutable_push="$(docker push "$IMAGE_IMMUTABLE" 2>&1)"; then
+            printf '%s\n' "$immutable_push"
+            exit 1
+          fi
+          printf '%s\n' "$immutable_push"
+          digest="$(printf '%s\n' "$immutable_push" | sed -n \
+            's/^.*digest: \(sha256:[0-9a-f]\{64\}\) size:.*$/\1/p')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "immutable image push did not return exactly one OCI digest" >&2
+            exit 1
+          fi
+          docker push "${IMAGE}:latest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Request docker-home image update
+        env:
+          GITEA_TOKEN: ${{ env.GITEATOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          class RejectRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(
+                  self, request, file_pointer, code, message, headers, new_url
+              ):
+                  raise RuntimeError("docker-home workflow redirects are forbidden")
+
+          payload = json.dumps(
+              {
+                  "ref": "main",
+                  "inputs": {
+                      "image": "gitea.cacahuate.org/bennight/mcp-infisical-rs",
+                      "source_sha": os.environ["SOURCE_SHA"],
+                      "digest": os.environ["IMAGE_DIGEST"],
+                  },
+              }
+          ).encode()
+          request = urllib.request.Request(
+              "https://gitea.cacahuate.org/api/v1/repos/bennight/docker-home/"
+              "actions/workflows/update-first-party-image.yml/dispatches",
+              data=payload,
+              method="POST",
+              headers={
+                  "Authorization": f"token {os.environ['GITEA_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+          )
+          opener = urllib.request.build_opener(RejectRedirect())
+          with opener.open(request, timeout=30) as response:
+              if response.status != 204:
+                  raise RuntimeError(
+                      f"docker-home workflow dispatch returned {response.status}"
+                  )
+          PY
+
+      - name: Remove registry authentication
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -e "$DOCKER_CONFIG" ]; then
+            rm -rf -- "$DOCKER_CONFIG"
+          fi
+          test ! -e "$DOCKER_CONFIG"
+
+      - name: Remove local image tags
+        if: always()
+        run: |
+          set -euo pipefail
+          failed=0
+          for image_ref in "$IMAGE_IMMUTABLE" "${IMAGE}:latest"; do
+            if docker image inspect "$image_ref" >/dev/null 2>&1; then
+              docker image rm "$image_ref" || failed=1
+            fi
+          done
+          exit "$failed"

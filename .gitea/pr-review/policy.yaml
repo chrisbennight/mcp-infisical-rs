@@ -1,0 +1,69 @@
+enabled: true
+repo: bennight/mcp-infisical-rs
+base_branches:
+  - main
+renovate_mode: eval
+status_context: pr-review/gate
+intent_sources:
+  include_pr_body: true
+  include_linked_issues: true
+  include_pr_comments: true
+  include_referenced_files: true
+intent_requirements:
+  require_design_goal: true
+  require_acceptance_criteria: true
+  minimum_sections_present: 2
+  max_referenced_files: 8
+  allowed_reference_extensions:
+    - .csv
+    - .json
+    - .md
+    - .py
+    - .rs
+    - .txt
+    - .toml
+    - .yaml
+    - .yml
+review:
+  llm_required: true
+  # Keep the bound finite while allowing the pinned endpoint snapshot and its
+  # generated semantic matrix to be reviewed as one atomic audit contract.
+  max_diff_chars: 900000
+  max_comment_chars: 16000
+  agent_enabled: true
+verdict_states:
+  DO NOT MERGE: failure
+  RECOMMEND REVIEW: failure
+  RECOMMEND MERGE: success
+sensitive_paths:
+  - api-coverage/**
+  - crates/infisical-api/**
+  - crates/infisical-mcp/**
+  - crates/infisical-server/src/auth.rs
+  - crates/infisical-server/src/config.rs
+  - scripts/check_api_coverage.py
+  - Dockerfile
+  - gateway-manifest.yaml
+  - .gitea/workflows/**
+  - .gitea/pr-review/**
+impact_map:
+  api-coverage/**: "Pinned Infisical endpoint inventory and semantic capability-disposition contract"
+  crates/infisical-api/**: "Infisical credential, typed request/response, response-bound, and mutation retry boundary"
+  crates/infisical-mcp/**: "Model-visible schemas, semantic normalization, dispatch, annotations, and capability registry"
+  crates/infisical-server/src/auth.rs: "Gateway bearer and verified gateway identity JWT authentication boundary"
+  crates/infisical-server/src/config.rs: "Secret references and bounded runtime configuration boundary"
+  scripts/check_api_coverage.py: "Executable validator binding the pinned upstream inventory to the model-visible capability registry"
+  Dockerfile: "Published non-root service image and build supply chain"
+  gateway-manifest.yaml: "Gateway authorization, risk, side-effect, and PII classification contract"
+  .gitea/workflows/**: "CI, registry publication, and dependency-review boundary"
+  .gitea/pr-review/**: "AERB review and security policy"
+research:
+  enabled: true
+  max_collect_steps: 15
+  max_enhance_steps: 8
+  max_page_chars: 12000
+  max_sources: 10
+  max_report_chars: 16000
+  timeout_seconds: 300
+security_policy: security.yaml
+timeout_seconds: 120

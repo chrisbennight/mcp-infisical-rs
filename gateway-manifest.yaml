@@ -1,0 +1,45 @@
+name: infisical
+transport: http
+url: http://infisical-mcp:8000/mcp
+auth:
+  bearer_env: MCP_GATEWAY_UPSTREAM_BEARER_INFISICAL
+session:
+  isolation: per_call
+  scope: per_principal
+tools:
+  - name: server.info
+    risk: low
+    side_effects: false
+    pii: false
+  - name: server.capabilities
+    risk: low
+    side_effects: false
+    pii: false
+  - name: operations.list
+    risk: low
+    side_effects: false
+    pii: false
+  - name: operations.describe
+    risk: low
+    side_effects: false
+    pii: false
+  - name: types.describe
+    risk: low
+    side_effects: false
+    pii: false
+  - name: infisical.read
+    risk: high
+    side_effects: false
+    pii: true
+  - name: infisical.readAudited
+    risk: high
+    side_effects: true
+    pii: true
+  - name: infisical.write
+    risk: high
+    side_effects: true
+    pii: true
+  - name: infisical.destroy
+    risk: high
+    side_effects: true
+    pii: true

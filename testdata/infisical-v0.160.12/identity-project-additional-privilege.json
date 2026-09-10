@@ -1,0 +1,25 @@
+{
+  "id": "privilege-template",
+  "slug": "template",
+  "isTemporary": false,
+  "temporaryMode": null,
+  "temporaryRange": null,
+  "temporaryAccessStartTime": null,
+  "temporaryAccessEndTime": null,
+  "createdAt": "2026-07-20T00:00:00.000Z",
+  "updatedAt": "2026-07-20T00:00:00.000Z",
+  "permissions": [
+    {
+      "subject": "secrets",
+      "action": [
+        "describeSecret",
+        "readValue"
+      ],
+      "conditions": {
+        "environment": "prod",
+        "secretPath": "/shared"
+      },
+      "inverted": false
+    }
+  ]
+}
