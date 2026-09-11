@@ -10243,11 +10243,11 @@ fn certificate_tools() -> [TieredTool; 15] {
         ),
         observable_read_tool::<CertificateMaterialRevealInput, CertificateBundleOutput>(
             CERTIFICATES_BUNDLE_REVEAL_TOOL,
-            "Retrieve a project-owned certificate bundle after confirmation, with private-key material delivered through the governed transfer plane by default.",
+            "Retrieve a project-owned certificate bundle after confirmation, with private-key material returned inline unless the HTTP file-transfer extension is configured.",
         ),
         observable_read_tool::<CertificateMaterialRevealInput, CertificatePrivateKeyOutput>(
             CERTIFICATES_PRIVATE_KEY_REVEAL_TOOL,
-            "Retrieve a project-owned stored private key after confirmation and bind it cryptographically to the selected certificate, using governed reference delivery by default.",
+            "Retrieve a project-owned stored private key after confirmation and bind it cryptographically to the selected certificate, returning it inline unless the HTTP file-transfer extension is configured.",
         ),
         observable_read_tool::<CertificateRequestsListInput, Page<CertificateRequest>>(
             CERTIFICATE_REQUESTS_LIST_TOOL,
@@ -27605,8 +27605,8 @@ mod tests {
                 "projects": [{
                     "id": "project-1",
                     "_id": "project-1",
-                    "name": "docker-home",
-                    "slug": "docker-home",
+                    "name": "example-project",
+                    "slug": "example-project",
                     "type": "secret-manager",
                     "orgId": "org-1",
                     "description": null,

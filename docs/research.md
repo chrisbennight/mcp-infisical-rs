@@ -1,5 +1,8 @@
 # Research notes
 
+Historical design record. Deployment-specific examples describe the original
+installation; use the README and standalone guide for current setup.
+
 Research used Kagi search plus temporary shallow clones of the relevant public
 repositories. The implementation plan is grounded in the following primary
 sources.

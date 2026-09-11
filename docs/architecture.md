@@ -51,7 +51,7 @@ issued or accepted as a credential.
 errors, and secret-bearing data types. `infisical-mcp` owns the catalog, JSON
 schemas, validation, dispatch, result types, and gateway classification export.
 `infisical-server` composes those crates with configuration, stdio, Streamable HTTP,
-bearer and JWT middleware, rate limits, tracing, health, and shutdown.
+bearer and JWT middleware, concurrency limits, tracing, health, and shutdown.
 
 This direction prevents HTTP details from leaking into tool schemas and keeps
 the API client usable in isolated contract tests.
@@ -520,7 +520,7 @@ upload reference.
 
 ## Network topology
 
-The eventual Infisical compose change should attach only the application
+For an isolated container deployment, attach only the Infisical application
 service to a new external `infisical_api_private` network. Postgres and Redis
 remain solely on the existing backend network. The MCP stack joins
 `infisical_api_private` and owns `infisical_mcp_private`; the gateway joins only
@@ -549,7 +549,7 @@ tracing provides transport events; there is no complete per-operation audit
 trail containing caller identity, operation name, and affected resources. An
 upstream gateway can provide caller attribution and operation auditing.
 
-They exclude authorization headers, MCP arguments and results, secret values,
+Server diagnostics exclude authorization headers, MCP arguments and results, secret values,
 private keys, certificates, and request/response bodies.
 
 The upstream service sees the shared Machine Identity rather than the human

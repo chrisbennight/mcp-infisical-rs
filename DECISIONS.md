@@ -116,7 +116,7 @@ and Redis. There is no public route for the MCP server.
 ## Versioned support target
 
 The initial compatibility target is Infisical `0.160.12`, matching the current
-homelab deployment. API coverage is tracked from that tagged documentation
+original deployment. API coverage is tracked from that tagged documentation
 snapshot. Future Infisical upgrades update the capability matrix before the
 declared target changes.
 

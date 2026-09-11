@@ -45,7 +45,7 @@ sensitive_paths:
   - gateway-manifest.yaml
   - .gitea/workflows/**
   - .github/workflows/**
-  - .github/pr-review/**
+  - .gitea/pr-review/**
 impact_map:
   api-coverage/**: "Pinned Infisical endpoint inventory and semantic capability-disposition contract"
   crates/infisical-api/**: "Infisical credential, typed request/response, response-bound, and mutation retry boundary"
@@ -56,7 +56,7 @@ impact_map:
   gateway-manifest.yaml: "Gateway authorization, risk, side-effect, and PII classification contract"
   .gitea/workflows/**: "CI, registry publication, and dependency-review boundary"
   .github/workflows/**: "GitHub validation and supply-chain boundary"
-  .github/pr-review/**: "AERB review and security policy"
+  .gitea/pr-review/**: "AERB review and security policy"
 research:
   enabled: true
   max_collect_steps: 15

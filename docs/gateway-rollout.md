@@ -1,9 +1,13 @@
-# Gateway and deployment rollout
+# Optional gateway integration
 
 ## Upstream manifest
 
-The checked-in [gateway manifest](../gateway-manifest.yaml) is the source copied
-into `docker-home` during rollout. It uses Streamable HTTP, a static service
+This guide describes the optional signed-identity gateway profile, not a
+requirement for standalone use. The policy examples belong in your gateway,
+not in this server.
+
+The checked-in [gateway manifest](../gateway-manifest.yaml) is an example for a
+gateway that implements its schema. It uses Streamable HTTP, a static service
 bearer resolved from the gateway environment, and per-call isolation with the
 safe per-principal scope:
 
@@ -76,8 +80,7 @@ member, a groupless principal, an unrelated group, and every risk class.
 ## Secret ownership and rotation
 
 Use a dedicated Infisical path for the MCP stack and a shared gateway reference
-for the service bearer. The exact path will follow the `docker-home` convention
-selected during rollout. At minimum it stores:
+for the service bearer. Choose paths according to your deployment conventions. At minimum it stores:
 
 - the MCP server’s Universal Auth client ID and client secret
 - the current ingress bearer and, temporarily, the previous bearer
@@ -111,6 +114,5 @@ user, read-only filesystem, small `noexec,nosuid,nodev` tmpfs, all capabilities
 dropped, `no-new-privileges`, PID and CPU/memory limits, graceful shutdown, and
 a binary healthcheck.
 
-Komodo registration is a separate first step. Deployment automation is enabled
-only after the generated stack identifier has been read from Komodo and added to
-the workflow.
+Deployment automation and infrastructure registration belong to the operator.
+This repository does not deploy the service.
