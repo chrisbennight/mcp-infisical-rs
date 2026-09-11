@@ -24,6 +24,10 @@ variables to its process through your credential manager or client configuration
 | `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` | Machine identity client secret |
 | `INFISICAL_UNIVERSAL_AUTH_ORGANIZATION_SLUG` | Optional organization scope |
 
+The API coverage target is Infisical `v0.160.12`. Wire tests use isolated API
+fakes; they do not certify every edition or a named desktop client. Operations
+that require upstream licensing remain subject to that license and deployment.
+
 The process does not load `.env` files automatically. Do not place credentials in
 command arguments or commit them to configuration. Limit the machine identity's
 upstream permissions to the operations and projects these callers need. An

@@ -489,7 +489,7 @@ requested subject and SANs, and generated private key agree. A CSR result must
 preserve the CSR subject and public key and cannot return a private key. An
 approval or validation workflow instead returns a typed pending request
 reference without certificate material or upstream message text. Immediate
-private keys use the governed transfer plane by default. The mutation is sent
+private keys are inline unless the HTTP file-transfer extension is configured. The mutation is sent
 once; an indeterminate transport or response outcome tells the caller to
 reconcile through certificate-request inventory before deciding whether to
 issue again.
@@ -520,7 +520,7 @@ a currently valid linked issuer chain, and supplies a private key matching the
 renewed leaf. The returned certificate ID is then reconciled through project
 inventory and must retain the source profile and certificate authority before
 the result is reported.
-That private key uses the governed transfer plane by default. Configuration
+That private key is inline unless the HTTP file-transfer extension is configured. Configuration
 changes are closed to setting the documented lead-time range or disabling
 automatic renewal, and their response must reflect the requested setting.
 Revocation checks the returned serial and timestamp; deletion checks the

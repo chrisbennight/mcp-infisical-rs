@@ -697,7 +697,7 @@ mod tests {
             IdentityVerifierSettings {
                 jwks_url: Url::parse(&format!("http://mcp-gateway:{port}/.well-known/jwks.json"))
                     .unwrap(),
-                issuer: "https://mcp.cacahuate.org".into(),
+                issuer: "https://gateway.example.com".into(),
                 allow_private_http: true,
                 request_timeout: Duration::from_secs(1),
                 cache_ttl: Duration::from_mins(5),
@@ -745,7 +745,7 @@ mod tests {
                     server.address().port()
                 ))
                 .unwrap(),
-                issuer: "https://mcp.cacahuate.org".into(),
+                issuer: "https://gateway.example.com".into(),
                 allow_private_http: true,
                 request_timeout: Duration::from_secs(1),
                 cache_ttl: Duration::from_mins(5),

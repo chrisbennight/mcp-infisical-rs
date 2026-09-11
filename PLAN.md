@@ -1,5 +1,8 @@
 # Implementation plan
 
+Historical design record. Deployment-specific examples describe the original
+installation; use the README and standalone guide for current setup.
+
 ## Outcome
 
 Build a production-grade Rust MCP server covering the non-deprecated management

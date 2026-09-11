@@ -502,12 +502,12 @@ mod tests {
                 (
                     CERTIFICATES_BUNDLE_REVEAL_TOOL,
                     "Reveal certificate bundle",
-                    "Retrieve a project-owned certificate bundle after confirmation, with private-key material delivered through the governed transfer plane by default.",
+                    "Retrieve a project-owned certificate bundle after confirmation, with private-key material returned inline unless the HTTP file-transfer extension is configured.",
                 ),
                 (
                     CERTIFICATES_PRIVATE_KEY_REVEAL_TOOL,
                     "Reveal certificate private key",
-                    "Retrieve a project-owned stored private key after confirmation and bind it cryptographically to the selected certificate, using governed reference delivery by default.",
+                    "Retrieve a project-owned stored private key after confirmation and bind it cryptographically to the selected certificate, returning it inline unless the HTTP file-transfer extension is configured.",
                 ),
             ],
         );

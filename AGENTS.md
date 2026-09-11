@@ -1,7 +1,7 @@
 # Repository instructions
 
 This repository owns the Rust implementation and container image for the
-Infisical MCP server. Deployment configuration belongs in `docker-home`.
+Infisical MCP server. Deployment configuration belongs in the operator’s own deployment repository.
 
 ## Architecture boundaries
 
@@ -63,7 +63,7 @@ be successful on the current head. A missing AERB status is a repository
 enrollment failure, never a reason to waive the review.
 
 AERB's repository-managed review and security policy lives under
-`.github/pr-review/`. `RECOMMEND REVIEW` remains blocking; only a current-head
+`.gitea/pr-review/` (the path currently read by AERB on both forges). `RECOMMEND REVIEW` remains blocking; only a current-head
 `RECOMMEND MERGE` satisfies the review gate.
 
 Request an AERB GitHub review after each pushed PR head. When addressing a
