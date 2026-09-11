@@ -9,8 +9,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
-BUILD_WORKFLOW = REPO_ROOT / ".gitea" / "workflows" / "build.yml"
-TEST_WORKFLOW = REPO_ROOT / ".gitea" / "workflows" / "test.yml"
+BUILD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
+TEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 GITHUB_TEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 
 
@@ -94,16 +94,6 @@ def _has_command(block: str | None, command: str) -> bool:
     )
 
 
-def _has_active_text(block: str | None, text: str) -> bool:
-    if block is None:
-        return False
-    return any(
-        text in line
-        for line in block.splitlines()
-        if not line.lstrip().startswith("#")
-    )
-
-
 def _require_step(
     errors: list[str],
     job: str,
@@ -144,6 +134,8 @@ def validate_dockerfile(text: str) -> list[str]:
         and "cargo build --release --locked --bin mcp-infisical-rs" in instruction,
         "distroless non-root runtime": lambda instruction: instruction.startswith("FROM ")
         and "gcr.io/distroless/cc-debian12:nonroot@sha256:" in instruction,
+        "license notices": lambda instruction: instruction
+        == "COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/mcp-infisical-rs/",
         "explicit non-root user": lambda instruction: instruction
         == "USER nonroot:nonroot",
         "native healthcheck": lambda instruction: instruction.startswith("HEALTHCHECK ")
@@ -158,134 +150,50 @@ def validate_dockerfile(text: str) -> list[str]:
 
 
 def validate_build_workflow(text: str) -> list[str]:
+    """Require validation, explicit public enablement, and scoped publication."""
     errors: list[str] = []
     on = _mapping_block(text, "on", 0)
     push = _mapping_block(on or "", "push", 2)
-    if not _has_yaml_line(push, "    branches: [main]"):
-        errors.append("build workflow automatic publication must target main only")
-
+    if not _has_yaml_line(push, "    tags: ['v*']"):
+        errors.append("release workflow must trigger on version tags")
     concurrency = _mapping_block(text, "concurrency", 0)
-    if not _has_yaml_line(
-        concurrency, "  group: mcp-infisical-rs-build-publication"
-    ) or not _has_yaml_line(concurrency, "  cancel-in-progress: false"):
-        errors.append("build workflow must globally serialize shared-tag publication")
-
-    env = _mapping_block(text, "env", 0)
-    if not _has_yaml_line(
-        env,
-        "  IMAGE_IMMUTABLE: "
-        "gitea.cacahuate.org/bennight/mcp-infisical-rs:sha-${{ github.sha }}",
-    ):
-        errors.append("immutable image tag must derive once from the full commit SHA")
-
+    if not _has_yaml_line(concurrency, "  group: mcp-infisical-rs-release-publication") or not _has_yaml_line(concurrency, "  cancel-in-progress: false"):
+        errors.append("release publication must be serialized without cancellation")
+    if (_mapping_block(text, "permissions", 0) or "").strip() != "permissions:\n  contents: read":
+        errors.append("release workflow default permissions must be contents: read")
     jobs = _mapping_block(text, "jobs", 0)
     verify = _mapping_block(jobs or "", "verify", 2)
+    if not _has_yaml_line(verify, "    uses: ./.github/workflows/test.yml"):
+        errors.append("release verification must reuse repository validation")
     publish = _mapping_block(jobs or "", "publish", 2)
-    if verify is None or publish is None:
-        errors.append("build workflow must contain unique verify and publish jobs")
-        return errors
-    if not _has_yaml_line(publish, "    needs: verify"):
-        errors.append("publish job must depend on verify")
-    if not _has_yaml_line(publish, "    if: github.ref == 'refs/heads/main'"):
-        errors.append("publish job must reject non-main workflow dispatches")
-
-    fetch = _require_step(errors, publish, "Fetch registry credential")
-    if not _has_yaml_line(fetch, "          secret-path: /bennight/mcp-infisical-rs"):
-        errors.append("registry credential must use the per-repository Infisical path")
-
-    _require_step(
-        errors,
-        publish,
-        "Build image",
-        (
-            # The build forwards the crate index argument ahead of these flags,
-            # so the asserted line carries it too. Platform and both tags are
-            # what this contract is about; the argument rides in front of them.
-            'docker build "${index_build_args[@]}" --platform linux/amd64 '
-            '--tag "$IMAGE_IMMUTABLE" --tag "${IMAGE}:latest" .',
-        ),
-    )
-    _require_step(
-        errors,
-        publish,
-        "Inspect runtime image metadata",
-        (
-            'test "$configured_user" = "nonroot:nonroot"',
-            "test \"$healthcheck_test\" = "
-            '\'["CMD","/mcp-infisical-rs","--healthcheck"]\'',
-        ),
-    )
-    _require_step(
-        errors,
-        publish,
-        "Smoke hardened runtime container",
-        ("--read-only \\", "--cap-drop ALL \\", "--security-opt no-new-privileges \\"),
-    )
-    _require_step(
-        errors,
-        publish,
-        "Cleanup smoke container",
-        ('docker rm -f -v "$SMOKE_CONTAINER"',),
-        always=True,
-    )
-    publish_image = _require_step(
-        errors,
-        publish,
-        "Publish image",
-        (
-            "printf '%s' \"$GITEATOKEN\" | docker login "
-            "gitea.cacahuate.org --username bennight --password-stdin",
-            'if ! immutable_push="$(docker push "$IMAGE_IMMUTABLE" 2>&1)"; then',
-            'docker push "${IMAGE}:latest"',
-        ),
-    )
-    if not _has_yaml_line(publish_image, "        id: publish"):
-        errors.append("image publication must expose the immutable registry digest")
-    if not _has_command(
-        publish_image, 'echo "digest=$digest" >> "$GITHUB_OUTPUT"'
+    for line in (
+        "    needs: verify",
+        "    if: github.event.repository.private == false && vars.ENABLE_RELEASE_PUBLICATION == 'true'",
+        "    runs-on: ubuntu-latest",
+        "    timeout-minutes: 45",
     ):
-        errors.append("image publication must emit its immutable registry digest")
-
-    deploy = _require_step(
-        errors,
-        publish,
-        "Request docker-home image update",
-    )
-    required_dispatch_markers = (
-        "          SOURCE_SHA: ${{ github.sha }}",
-        "          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}",
-        '"image": "gitea.cacahuate.org/bennight/mcp-infisical-rs"',
-        '"source_sha": os.environ["SOURCE_SHA"]',
-        '"digest": os.environ["IMAGE_DIGEST"]',
-        "class RejectRedirect(urllib.request.HTTPRedirectHandler):",
-        'raise RuntimeError("docker-home workflow redirects are forbidden")',
-        '"https://gitea.cacahuate.org/api/v1/repos/bennight/docker-home/"',
-        '"actions/workflows/update-first-party-image.yml/dispatches"',
-        "opener = urllib.request.build_opener(RejectRedirect())",
-    )
-    for marker in required_dispatch_markers:
-        if not _has_active_text(deploy, marker):
-            errors.append(
-                f"docker-home image update step is missing contract marker: {marker}"
-            )
-    if _has_active_text(deploy, "urllib.request.urlopen("):
-        errors.append("docker-home image update must not use the redirecting opener")
-    _require_step(
-        errors,
-        publish,
-        "Remove registry authentication",
-        ('rm -rf -- "$DOCKER_CONFIG"', 'test ! -e "$DOCKER_CONFIG"'),
-        always=True,
-    )
-    _require_step(
-        errors,
-        publish,
-        "Remove local image tags",
-        ('docker image rm "$image_ref" || failed=1', 'exit "$failed"'),
-        always=True,
-    )
-    if "trap " in text:
-        errors.append("build workflow cleanup must not rely on EXIT traps")
+        if not _has_yaml_line(publish, line):
+            errors.append(f"publication job is missing: {line.strip()}")
+    permissions = _mapping_block(publish or "", "permissions", 4)
+    if (permissions or "").strip() != ("permissions:\n      contents: read\n      packages: write\n      id-token: write\n      attestations: write"):
+        errors.append("release publication permissions must be explicitly scoped")
+    for name, lines in (
+        ("Validate release source and dependency licenses", ("        run: python3 scripts/prepare_release.py",)),
+        ("Build and publish versioned image", (
+            "          platforms: linux/amd64", "          push: true", "          provenance: mode=max",
+            "            ${{ env.IMAGE }}:${{ github.ref_name }}", "            ${{ env.IMAGE }}:sha-${{ github.sha }}",
+        )),
+        ("Attest published image", ("          subject-digest: ${{ steps.image.outputs.digest }}", "          push-to-registry: true")),
+        ("Record immutable image digest", ("        run: python3 scripts/prepare_release.py --record-digest",)),
+    ):
+        step = _require_step(errors, publish or "", name)
+        for line in lines:
+            if not _has_yaml_line(step, line):
+                errors.append(f"{name!r} step is missing: {line.strip()}")
+    for line in text.splitlines():
+        if "uses:" in line and "uses: ./" not in line and not line.lstrip().startswith("#"):
+            if not re.search(r"@[0-9a-f]{40}(?: |$)", line):
+                errors.append("release actions must be pinned to full commits")
     return errors
 
 
@@ -373,7 +281,6 @@ def validate_github_test_workflow(text: str) -> list[str]:
 def main() -> int:
     errors = validate_dockerfile(DOCKERFILE.read_text(encoding="utf-8"))
     errors.extend(validate_build_workflow(BUILD_WORKFLOW.read_text(encoding="utf-8")))
-    errors.extend(validate_test_workflow(TEST_WORKFLOW.read_text(encoding="utf-8")))
     errors.extend(validate_github_test_workflow(GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")))
     if errors:
         for error in errors:

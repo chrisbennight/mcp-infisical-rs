@@ -43,7 +43,6 @@ sensitive_paths:
   - scripts/check_api_coverage.py
   - Dockerfile
   - gateway-manifest.yaml
-  - .gitea/workflows/**
   - .github/workflows/**
   - .gitea/pr-review/**
 impact_map:
@@ -54,7 +53,6 @@ impact_map:
   scripts/check_api_coverage.py: "Executable validator binding the pinned upstream inventory to the model-visible capability registry"
   Dockerfile: "Published non-root service image and build supply chain"
   gateway-manifest.yaml: "Gateway authorization, risk, side-effect, and PII classification contract"
-  .gitea/workflows/**: "CI, registry publication, and dependency-review boundary"
   .github/workflows/**: "GitHub validation and supply-chain boundary"
   .gitea/pr-review/**: "AERB review and security policy"
 research:

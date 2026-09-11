@@ -47,6 +47,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 COPY --from=builder /usr/local/bin/mcp-infisical-rs /mcp-infisical-rs
 
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/mcp-infisical-rs/
 USER nonroot:nonroot
 EXPOSE 8000
 

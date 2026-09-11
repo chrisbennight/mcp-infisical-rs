@@ -28,6 +28,30 @@ class TestReleaseContract(unittest.TestCase):
                 )
                 self.assertTrue(any(expected in error for error in errors), errors)
 
+    def test_publication_guards_cannot_be_removed(self) -> None:
+        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
+        for marker in (
+            "    needs: verify",
+            "    if: github.event.repository.private == false && vars.ENABLE_RELEASE_PUBLICATION == 'true'",
+            "          provenance: mode=max",
+            "        run: python3 scripts/prepare_release.py",
+            "          subject-digest: ${{ steps.image.outputs.digest }}",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, workflow)
+                broken = workflow.replace(marker, "# " + marker)
+                self.assertTrue(CHECK_RELEASE.validate_build_workflow(broken))
+        self.assertTrue(CHECK_RELEASE.validate_build_workflow(
+            workflow.replace("      packages: write", "      contents: write")
+        ))
+
+    def test_guard_text_in_another_job_does_not_authorize_publication(self) -> None:
+        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
+        broken = workflow.replace("    needs: verify\n", "").replace(
+            "  verify:\n", "  verify:\n    needs: verify\n"
+        )
+        self.assertTrue(CHECK_RELEASE.validate_build_workflow(broken))
+
     def test_repository_release_contract_is_valid(self) -> None:
         self.assertEqual(
             CHECK_RELEASE.validate_dockerfile(
@@ -84,147 +108,6 @@ class TestReleaseContract(unittest.TestCase):
             CHECK_RELEASE.validate_dockerfile(broken),
         )
 
-    def test_publication_without_verification_dependency_is_rejected(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "    needs: verify\n",
-            "    # needs: verify\n",
-        )
-        self.assertIn(
-            "publish job must depend on verify",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_manual_publication_from_non_main_is_rejected(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "    if: github.ref == 'refs/heads/main'\n",
-            "    if: github.event_name == 'workflow_dispatch'\n",
-        )
-        self.assertIn(
-            "publish job must reject non-main workflow dispatches",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_rolling_tag_marker_in_unrelated_step_is_rejected(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            '          docker push "${IMAGE}:latest"\n',
-            '          # docker push "${IMAGE}:latest"\n',
-        )
-        self.assertIn(
-            "'Publish image' step is missing command: docker push \"${IMAGE}:latest\"",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_publication_must_emit_the_immutable_digest(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            '          echo "digest=$digest" >> "$GITHUB_OUTPUT"\n',
-            '          # echo "digest=$digest" >> "$GITHUB_OUTPUT"\n',
-        )
-        self.assertIn(
-            "image publication must emit its immutable registry digest",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_publication_must_dispatch_the_gated_docker_home_update(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        for marker in (
-            '"image": "gitea.cacahuate.org/bennight/mcp-infisical-rs",',
-            '"source_sha": os.environ["SOURCE_SHA"],',
-            '"digest": os.environ["IMAGE_DIGEST"],',
-            "class RejectRedirect(urllib.request.HTTPRedirectHandler):",
-            'raise RuntimeError("docker-home workflow redirects are forbidden")',
-            '"https://gitea.cacahuate.org/api/v1/repos/bennight/docker-home/"',
-            '"actions/workflows/update-first-party-image.yml/dispatches",',
-            "opener = urllib.request.build_opener(RejectRedirect())",
-        ):
-            with self.subTest(marker=marker):
-                active_line = next(
-                    line
-                    for line in workflow.splitlines()
-                    if line.strip() == marker
-                )
-                indentation = active_line[: -len(active_line.lstrip())]
-                broken = workflow.replace(
-                    f"{active_line}\n",
-                    f"{indentation}# {marker}\n",
-                    1,
-                )
-                self.assertTrue(
-                    any(
-                        "docker-home image update step is missing contract marker"
-                        in error
-                        for error in CHECK_RELEASE.validate_build_workflow(
-                            broken
-                        )
-                    )
-                )
-
-    def test_docker_home_dispatch_must_not_use_the_default_opener(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "with opener.open(request, timeout=30) as response:",
-            "with urllib.request.urlopen(request, timeout=30) as response:",
-        )
-        self.assertIn(
-            "docker-home image update must not use the redirecting opener",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_docker_home_dispatch_script_is_valid_python(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        jobs = CHECK_RELEASE._mapping_block(workflow, "jobs", 0)
-        publish = CHECK_RELEASE._mapping_block(jobs or "", "publish", 2)
-        dispatch = CHECK_RELEASE._named_step_block(
-            publish or "", "Request docker-home image update"
-        )
-        self.assertIsNotNone(dispatch)
-        python_source = (
-            dispatch.split("python3 - <<'PY'\n", 1)[1]
-            .rsplit("\n          PY", 1)[0]
-        )
-        python_source = "\n".join(
-            line[10:] if line.startswith("          ") else line
-            for line in python_source.splitlines()
-        )
-        compile(python_source, str(CHECK_RELEASE.BUILD_WORKFLOW), "exec")
-
-    def test_publication_runs_are_serialized_without_cancellation(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "  group: mcp-infisical-rs-build-publication\n",
-            "  group: mcp-infisical-rs-build-${{ github.ref }}\n",
-        )
-        self.assertIn(
-            "build workflow must globally serialize shared-tag publication",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_immutable_tag_uses_the_full_commit_sha(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "sha-${{ github.sha }}",
-            "sha-${GITHUB_SHA::12}",
-        )
-        self.assertIn(
-            "immutable image tag must derive once from the full commit SHA",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
-
-    def test_cleanup_requires_an_explicit_always_step(self) -> None:
-        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
-        broken = workflow.replace(
-            "      - name: Remove registry authentication\n"
-            "        if: always()\n",
-            "      - name: Remove registry authentication\n"
-            "        # if: always()\n",
-        )
-        self.assertIn(
-            "'Remove registry authentication' step must run with if: always()",
-            CHECK_RELEASE.validate_build_workflow(broken),
-        )
 
     def test_hardening_marker_outside_smoke_step_is_rejected(self) -> None:
         workflow = CHECK_RELEASE.TEST_WORKFLOW.read_text(encoding="utf-8")
