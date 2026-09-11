@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TEST_WORKFLOW = (ROOT / ".gitea/workflows/test.yml").read_text()
 BUILD_WORKFLOW = (ROOT / ".gitea/workflows/build.yml").read_text()
+GITHUB_TEST_WORKFLOW = (ROOT / ".github/workflows/test.yml").read_text()
 DOCKERIGNORE = (ROOT / ".dockerignore").read_text()
 
 FORWARD = 'index_build_args=(--build-arg "CRATES_INDEX_URL=${CRATES_INDEX_URL}")'
@@ -31,7 +32,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
         workflows build the production Dockerfile and both have to hand the
         address over explicitly.
         """
-        for name, workflow in (("test.yml", TEST_WORKFLOW), ("build.yml", BUILD_WORKFLOW)):
+        for name, workflow in (("test.yml", TEST_WORKFLOW), ("build.yml", BUILD_WORKFLOW), ("github/test.yml", GITHUB_TEST_WORKFLOW)):
             with self.subTest(workflow=name):
                 builds = [
                     line.strip()
@@ -55,7 +56,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
         cargo on crates.io -- which is the fallback that keeps this image
         buildable away from the network the proxy lives on.
         """
-        for workflow in (TEST_WORKFLOW, BUILD_WORKFLOW):
+        for workflow in (TEST_WORKFLOW, BUILD_WORKFLOW, GITHUB_TEST_WORKFLOW):
             self.assertIn('if [ -n "${CRATES_INDEX_URL:-}" ]; then', workflow)
 
     def test_the_image_context_carries_no_runner_written_cargo_config(self) -> None:
@@ -74,7 +75,7 @@ class PackageIndexRoutingTests(unittest.TestCase):
 
     def test_the_runner_is_redirected_before_it_resolves_anything(self) -> None:
         """A config file written after the fetch redirects nothing."""
-        for name, workflow in (("test.yml", TEST_WORKFLOW), ("build.yml", BUILD_WORKFLOW)):
+        for name, workflow in (("test.yml", TEST_WORKFLOW), ("build.yml", BUILD_WORKFLOW), ("github/test.yml", GITHUB_TEST_WORKFLOW)):
             with self.subTest(workflow=name):
                 proxy = workflow.index("- name: Point cargo at the crate proxy")
                 first_cargo = next(

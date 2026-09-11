@@ -1,0 +1,156 @@
+name: test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # renovate: datasource=github-tags depName=rust-lang/rustup
+      RUSTUP_INIT_VERSION: "1.29.0"
+      RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      CARGO_TERM_COLOR: always
+      SMOKE_IMAGE: mcp-infisical-rs:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_CONTAINER: mcp-infisical-pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Ensure cargo is available
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/rustup-init \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c -
+            chmod +x /tmp/rustup-init
+            /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path
+            rm -f /tmp/rustup-init
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup component add rustfmt clippy
+          fi
+
+      - name: Tool versions
+        run: |
+          rustc --version
+          cargo --version
+          python3 --version
+
+      # These cargo invocations run on the runner, not in an image, so they see
+      # the job environment directly - but cargo reads no environment variable
+      # for a mirror, so the address still has to become a config file. Written
+      # here rather than committed: a checked-in mirror would be a hard
+      # dependency on a host that resolves only on the LAN.
+      - name: Point cargo at the crate proxy
+        run: |
+          set -euo pipefail
+          if [ -z "${CRATES_INDEX_URL:-}" ]; then
+            echo "SKIP: no crate index configured; cargo will use crates.io"
+            exit 0
+          fi
+          mkdir -p .cargo
+          printf '\n[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+            "${CRATES_INDEX_URL}" >> .cargo/config.toml
+          echo "cargo source replacement written"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Rust documentation
+        run: cargo doc --workspace --no-deps --locked
+
+      - name: Documentation contract
+        run: python3 scripts/check_docs.py
+
+      - name: API coverage contract
+        run: python3 scripts/check_api_coverage.py
+
+      - name: Documentation validator tests
+        run: python3 -m unittest discover -s scripts/tests
+
+      - name: Release contract
+        run: python3 scripts/check_release.py
+
+      - name: Build hardened runtime image
+        run: |
+          set -euo pipefail
+          # The config file written above redirects this job's own cargo; it
+          # cannot redirect the image's, because the daemon builds a RUN step's
+          # environment from the Dockerfile rather than inheriting this shell.
+          # Forwarded by value for the same reason, and only when the name holds
+          # one: an empty --build-arg would pin a source naming an empty
+          # registry instead of leaving cargo on crates.io.
+          index_build_args=()
+          if [ -n "${CRATES_INDEX_URL:-}" ]; then
+            index_build_args=(--build-arg "CRATES_INDEX_URL=${CRATES_INDEX_URL}")
+          fi
+          sudo docker build "${index_build_args[@]}" --platform linux/amd64 --tag "$SMOKE_IMAGE" .
+
+      - name: Inspect runtime image metadata
+        run: |
+          set -euo pipefail
+          configured_user="$(sudo docker image inspect --format '{{.Config.User}}' "$SMOKE_IMAGE")"
+          healthcheck_test="$(sudo docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$SMOKE_IMAGE")"
+          test "$configured_user" = "nonroot:nonroot"
+          test "$healthcheck_test" = '["CMD","/mcp-infisical-rs","--healthcheck"]'
+
+      - name: Smoke hardened runtime container
+        run: |
+          set -euo pipefail
+          sudo docker run -d --name "$SMOKE_CONTAINER" \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            -e INFISICAL_API_URL=http://127.0.0.1:65534 \
+            -e INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=smoke-client \
+            -e INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=smoke-client-secret \
+            -e INFISICAL_MCP_BEARER_CURRENT=0123456789abcdef0123456789abcdef \
+            -e INFISICAL_MCP_IDENTITY_ISSUER=https://gateway.test \
+            -e INFISICAL_MCP_IDENTITY_JWKS_URL=http://127.0.0.1:65533/jwks \
+            -e INFISICAL_MCP_ALLOWED_HOSTS=infisical-mcp,infisical-mcp:8000 \
+            "$SMOKE_IMAGE" >/dev/null
+          ready=
+          for _ in $(seq 1 30); do
+            if sudo docker exec "$SMOKE_CONTAINER" /mcp-infisical-rs --healthcheck >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            sudo docker logs "$SMOKE_CONTAINER"
+            exit 1
+          fi
+
+      - name: Cleanup smoke artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          failed=0
+          if sudo docker container inspect "$SMOKE_CONTAINER" >/dev/null 2>&1; then
+            sudo docker rm -f -v "$SMOKE_CONTAINER" || failed=1
+          fi
+          if sudo docker image inspect "$SMOKE_IMAGE" >/dev/null 2>&1; then
+            sudo docker image rm "$SMOKE_IMAGE" || failed=1
+          fi
+          exit "$failed"

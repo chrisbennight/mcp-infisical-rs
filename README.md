@@ -245,6 +245,13 @@ gate, and deterministic validation of the pinned endpoint coverage matrix.
 
 ## Container image
 
+GitHub pull requests run the repository checks and build and smoke-test the
+hardened runtime image. This workflow uses GitHub-hosted runners and a read-only
+repository token; it needs no private credentials. A crate mirror is optional.
+
+The imported `.gitea/workflows/build.yml` describes the original deployment
+below and does not execute on GitHub. GitHub image publication is not yet enabled.
+
 Merges to `main` publish
 `gitea.cacahuate.org/bennight/mcp-infisical-rs:sha-<commit>` and the rolling
 `:latest` deployment tag only after the complete repository gate passes. The
