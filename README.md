@@ -74,6 +74,7 @@ extension and cannot run over stdio. The shared catalog still lists it.
 - [Optional gateway integration](docs/gateway-rollout.md)
 - [Security and vulnerability reporting](SECURITY.md)
 - [Contributing and validation](CONTRIBUTING.md)
+- [Release preparation and verification](docs/releases.md)
 
 ## Support and license
 
