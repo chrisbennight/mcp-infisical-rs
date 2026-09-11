@@ -2,8 +2,8 @@ blocked_paths: []
 notes:
   - "This server is a typed semantic MCP interface, never an arbitrary Infisical HTTP proxy. Every exposed operation has bounded schemas, explicit validation, and a gateway classification."
   - "Infisical remains authoritative. The server must not synthesize success, compensate for upstream defects, or retry a mutation after an ambiguous transport result."
-  - "Secret values, gateway bearers, identity JWTs, Infisical credentials, and secret names must never appear in source, workflow YAML, Compose examples, logs, tests, comments, or command arguments."
-  - "Every MCP request requires both the rotating gateway bearer and verified gateway identity JWT. Network membership, sessions, and source addresses are not authentication."
+  - "Never commit or log live credential values, secret values, private keys, gateway bearers, or identity JWTs. Never log request/response bodies. Synthetic test fixtures are permitted; govern secret identifiers and ordinary metadata separately according to their actual exposure risk."
+  - "Gateway HTTP requires the rotating bearer and verified gateway identity JWT; standalone HTTP requires the bearer on every request. Stdio trusts the local process boundary. Network membership and sessions do not replace HTTP credentials. Infisical owns upstream permissions; do not add a local user-policy engine."
   - "The tool registry is the source of tools/list and the gateway manifest. Risk, side-effect, PII, and local infisical-admin authorization classifications must remain aligned."
   - "The pinned API coverage snapshot and generated matrix are an audit contract. Source tag, full commit, endpoint inventory, dispositions, and capability identifiers must remain validator-enforced."
   - "Dockerfile and workflow changes are supply-chain sensitive. Preserve digest pins, locked builds, non-root runtime, and secret-reference-only publication configuration."

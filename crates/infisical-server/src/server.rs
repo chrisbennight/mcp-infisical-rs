@@ -29,7 +29,7 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use crate::{
-    auth::{IdentityVerifier, IdentityVerifierError, IngressAuth, require_gateway},
+    auth::{IdentityVerifier, IdentityVerifierError, IngressAuth, require_mcp_authentication},
     config::Settings,
 };
 
@@ -48,7 +48,11 @@ pub fn build_router(
     settings: &Settings,
     cancellation: &CancellationToken,
 ) -> Result<Router, IdentityVerifierError> {
-    let verifier = IdentityVerifier::new(settings.identity.clone())?;
+    let verifier = settings
+        .identity
+        .clone()
+        .map(IdentityVerifier::new)
+        .transpose()?;
     let auth = IngressAuth::new(
         Arc::clone(&settings.bearers),
         verifier,
@@ -82,7 +86,10 @@ pub fn build_router(
             settings.max_body_bytes,
             enforce_body_limit,
         ))
-        .layer(middleware::from_fn_with_state(auth, require_gateway))
+        .layer(middleware::from_fn_with_state(
+            auth,
+            require_mcp_authentication,
+        ))
         .layer(ConcurrencyLimitLayer::new(settings.max_concurrent_requests))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -470,14 +477,14 @@ mod tests {
                 GatewayBearers::new(CURRENT.into(), Some(PREVIOUS.into()))
                     .expect("valid test bearer configuration"),
             ),
-            identity: IdentityVerifierSettings {
+            identity: Some(IdentityVerifierSettings {
                 jwks_url: Url::parse(&format!("{}/jwks", jwks_server.uri()))
                     .expect("wiremock URL is valid"),
                 issuer: ISSUER.into(),
                 allow_private_http: false,
                 request_timeout: Duration::from_secs(2),
                 cache_ttl: Duration::from_mins(1),
-            },
+            }),
             infisical: InfisicalClient::new(ClientSettings::new(
                 Url::parse(&jwks_server.uri()).expect("wiremock URL is valid"),
                 "server-test-client".into(),

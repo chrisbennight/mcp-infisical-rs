@@ -28,7 +28,7 @@ pub struct Settings {
     pub max_concurrent_requests: usize,
     pub max_body_bytes: usize,
     pub bearers: Arc<GatewayBearers>,
-    pub identity: IdentityVerifierSettings,
+    pub identity: Option<IdentityVerifierSettings>,
     pub infisical: InfisicalClient,
     pub files: Option<FileSettings>,
 }
@@ -46,6 +46,46 @@ pub struct FileSettings {
 pub struct ListenerSettings {
     pub host: String,
     pub port: u16,
+}
+
+/// HTTP authentication profile; Infisical enforces upstream permissions in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HttpProfile {
+    Gateway,
+    Standalone,
+}
+
+/// Configuration for a local process with no HTTP listener or file-transfer routes.
+pub struct StdioSettings {
+    pub infisical: InfisicalClient,
+    pub log_level: String,
+    pub max_body_bytes: usize,
+}
+
+impl StdioSettings {
+    /// Read upstream credentials and local transport bounds without gateway settings.
+    ///
+    /// # Errors
+    /// Returns an error for invalid upstream settings or unsupported file delivery.
+    pub fn from_env() -> Result<Self, SettingsError> {
+        if optional("INFISICAL_MCP_FILE_PUBLIC_URL").is_some() {
+            return Err(SettingsError::Invalid {
+                variable: "INFISICAL_MCP_FILE_PUBLIC_URL",
+                message: "file transfers require HTTP transport; unset this variable for stdio"
+                    .into(),
+            });
+        }
+        Ok(Self {
+            infisical: infisical_from_env()?,
+            log_level: value_or("INFISICAL_MCP_LOG_LEVEL", "info"),
+            max_body_bytes: parse_number(
+                "INFISICAL_MCP_MAX_BODY_BYTES",
+                DEFAULT_MAX_BODY_BYTES,
+                1024,
+                16 * 1024 * 1024,
+            )?,
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -71,31 +111,62 @@ impl Settings {
     /// Returns an error when a required value is absent, malformed, weak, or
     /// outside a supported operational bound.
     pub fn from_env() -> Result<Self, SettingsError> {
-        let listener = Self::listener_from_env()?;
+        Self::from_env_with_profile(HttpProfile::Gateway, None, None)
+    }
+
+    /// Read settings for the selected HTTP authentication profile.
+    ///
+    /// # Errors
+    /// Returns an error for missing credentials or invalid operational bounds.
+    pub fn from_env_with_profile(
+        profile: HttpProfile,
+        host: Option<&str>,
+        port: Option<u16>,
+    ) -> Result<Self, SettingsError> {
+        let mut listener = Self::listener_from_env()?;
+        if profile == HttpProfile::Standalone {
+            listener.host = value_or("INFISICAL_MCP_HOST", "127.0.0.1");
+        }
+        if let Some(host) = host {
+            host.clone_into(&mut listener.host);
+        }
+        if let Some(port) = port {
+            listener.port = port;
+        }
+        let default_allowed_hosts = if profile == HttpProfile::Standalone {
+            format!(
+                "localhost,127.0.0.1,[::1],localhost:{},127.0.0.1:{},[::1]:{}",
+                listener.port, listener.port, listener.port
+            )
+        } else {
+            DEFAULT_ALLOWED_HOSTS.to_owned()
+        };
         let current = required_secret("INFISICAL_MCP_BEARER_CURRENT")?;
         let previous = optional_secret("INFISICAL_MCP_BEARER_PREVIOUS");
         let bearers = Arc::new(GatewayBearers::new(current, previous)?);
-        let jwks_url = parse_url(
-            "INFISICAL_MCP_IDENTITY_JWKS_URL",
-            &required("INFISICAL_MCP_IDENTITY_JWKS_URL")?,
-        )?;
-        let issuer = required("INFISICAL_MCP_IDENTITY_ISSUER")?;
-        let identity_allow_private_http =
-            optional_exact("INFISICAL_MCP_IDENTITY_ALLOW_PRIVATE_HTTP")?;
-        let mut infisical_settings = ClientSettings::new(
-            parse_url("INFISICAL_API_URL", &required("INFISICAL_API_URL")?)?,
-            required("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID")?,
-            SecretValue::new(required_secret("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET")?),
-        );
-        let allow_private_http = optional_exact("INFISICAL_API_ALLOW_PRIVATE_HTTP")?;
-        infisical_settings.allow_private_http = parse_boolean(
-            "INFISICAL_API_ALLOW_PRIVATE_HTTP",
-            allow_private_http.as_deref(),
-            false,
-        )?;
-        infisical_settings.organization_slug =
-            optional("INFISICAL_UNIVERSAL_AUTH_ORGANIZATION_SLUG");
-        let infisical = InfisicalClient::new(infisical_settings)?;
+        let identity = if profile == HttpProfile::Gateway {
+            let jwks_url = parse_url(
+                "INFISICAL_MCP_IDENTITY_JWKS_URL",
+                &required("INFISICAL_MCP_IDENTITY_JWKS_URL")?,
+            )?;
+            let issuer = required("INFISICAL_MCP_IDENTITY_ISSUER")?;
+            let identity_allow_private_http =
+                optional_exact("INFISICAL_MCP_IDENTITY_ALLOW_PRIVATE_HTTP")?;
+            Some(IdentityVerifierSettings {
+                jwks_url,
+                issuer,
+                allow_private_http: parse_boolean(
+                    "INFISICAL_MCP_IDENTITY_ALLOW_PRIVATE_HTTP",
+                    identity_allow_private_http.as_deref(),
+                    false,
+                )?,
+                request_timeout: Duration::from_secs(IDENTITY_REQUEST_TIMEOUT_SECONDS),
+                cache_ttl: Duration::from_secs(IDENTITY_CACHE_SECONDS),
+            })
+        } else {
+            None
+        };
+        let infisical = infisical_from_env()?;
 
         Ok(Self {
             host: listener.host,
@@ -103,7 +174,7 @@ impl Settings {
             log_level: value_or("INFISICAL_MCP_LOG_LEVEL", "info"),
             allowed_hosts: parse_allowed_hosts(&value_or(
                 "INFISICAL_MCP_ALLOWED_HOSTS",
-                DEFAULT_ALLOWED_HOSTS,
+                &default_allowed_hosts,
             ))?,
             allowed_origins: parse_allowed_origins(
                 &env::var("INFISICAL_MCP_ALLOWED_ORIGINS").unwrap_or_default(),
@@ -127,17 +198,7 @@ impl Settings {
                 16 * 1024 * 1024,
             )?,
             bearers,
-            identity: IdentityVerifierSettings {
-                jwks_url,
-                issuer,
-                allow_private_http: parse_boolean(
-                    "INFISICAL_MCP_IDENTITY_ALLOW_PRIVATE_HTTP",
-                    identity_allow_private_http.as_deref(),
-                    false,
-                )?,
-                request_timeout: Duration::from_secs(IDENTITY_REQUEST_TIMEOUT_SECONDS),
-                cache_ttl: Duration::from_secs(IDENTITY_CACHE_SECONDS),
-            },
+            identity,
             infisical,
             files: file_settings_from_env()?,
         })
@@ -154,6 +215,22 @@ impl Settings {
             port: parse_number("INFISICAL_MCP_PORT", DEFAULT_PORT, 1, u16::MAX)?,
         })
     }
+}
+
+fn infisical_from_env() -> Result<InfisicalClient, SettingsError> {
+    let mut settings = ClientSettings::new(
+        parse_url("INFISICAL_API_URL", &required("INFISICAL_API_URL")?)?,
+        required("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID")?,
+        SecretValue::new(required_secret("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET")?),
+    );
+    let allow_private_http = optional_exact("INFISICAL_API_ALLOW_PRIVATE_HTTP")?;
+    settings.allow_private_http = parse_boolean(
+        "INFISICAL_API_ALLOW_PRIVATE_HTTP",
+        allow_private_http.as_deref(),
+        false,
+    )?;
+    settings.organization_slug = optional("INFISICAL_UNIVERSAL_AUTH_ORGANIZATION_SLUG");
+    Ok(InfisicalClient::new(settings)?)
 }
 
 fn required(variable: &'static str) -> Result<String, SettingsError> {

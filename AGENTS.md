@@ -24,11 +24,14 @@ Infisical MCP server. Deployment configuration belongs in `docker-home`.
   return. Return `structuredContent` plus the JSON text compatibility form.
 - Give every field a useful description and constraint. Errors must explain
   how the caller can correct the request without disclosing secret material.
-- Treat tool annotations as hints, not authorization. Authorization is enforced
-  by the gateway and the server authenticates the gateway on every MCP request.
-- The gateway bearer and `X-MCP-Identity` JWT are both required on every MCP
-  HTTP request. Sessions, source addresses, and network membership never
-  replace either credential.
+- Treat tool annotations and confirmation fields as hints and intent safeguards,
+  not authorization. Infisical enforces the configured machine identity's authority;
+  an optional upstream gateway may enforce caller policy. Do not implement local roles.
+- Gateway HTTP requires both the bearer and `X-MCP-Identity` JWT on every request.
+  Standalone HTTP requires the bearer on every request, with no gateway JWT.
+  Sessions, source addresses, and network membership never replace credentials.
+- Stdio uses the local process boundary, opens no HTTP listener, and emits only
+  protocol messages on stdout. Keep diagnostics on stderr and never log SDK payloads.
 - Keep `/healthz` independent of MCP authentication, concurrency, and upstream
   Infisical availability. Its response must not disclose configuration.
 - Add a wire-level test through the Streamable HTTP transport for every tool

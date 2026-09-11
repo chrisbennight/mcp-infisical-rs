@@ -24,7 +24,7 @@ static TOOL_CATALOG: OnceLock<ListToolsResult> = OnceLock::new();
 /// Stable server name used by gateway manifests and identity audiences.
 pub const MCP_SERVER_NAME: &str = "infisical";
 
-/// Streamable HTTP endpoint exposed only on the private gateway network.
+/// Authenticated Streamable HTTP endpoint for standalone and gateway profiles.
 pub const MCP_ENDPOINT: &str = "/mcp";
 
 /// MCP protocol revision targeted by the server and gateway.
