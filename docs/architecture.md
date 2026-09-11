@@ -2,6 +2,14 @@
 
 ## Trust boundaries
 
+Local stdio and standalone stateless HTTP use the configured Infisical machine
+identity's authority. Stdio trusts the process owner and opens no listener.
+Standalone HTTP authenticates a shared bearer on every request, checks Host and
+Origin, and defaults to a loopback listener. It does not verify gateway JWTs or
+provide user roles. See [standalone connections](standalone.md) for configuration,
+secret delivery, and transport limits. The topology below is the optional gateway
+profile, which remains the default for compatibility with existing deployments.
+
 ```text
 authenticated MCP user
           |
@@ -42,7 +50,7 @@ issued or accepted as a credential.
 `infisical-api` owns HTTP, Universal Auth, endpoint versions, pagination, API
 errors, and secret-bearing data types. `infisical-mcp` owns the catalog, JSON
 schemas, validation, dispatch, result types, and gateway classification export.
-`infisical-server` composes those crates with configuration, Streamable HTTP,
+`infisical-server` composes those crates with configuration, stdio, Streamable HTTP,
 bearer and JWT middleware, rate limits, tracing, health, and shutdown.
 
 This direction prevents HTTP details from leaking into tool schemas and keeps
@@ -55,7 +63,7 @@ Infisical, not a user token. Comparison uses a vetted constant-time primitive.
 The server accepts `CURRENT` and optionally `PREVIOUS`; rotation adds the new
 server value, switches the gateway, and then removes the old value.
 
-The signed identity is verified using the gateway JWKS. The verifier pins the
+In gateway mode, the signed identity is verified using the gateway JWKS. The verifier pins the
 configured issuer and fixed `infisical` audience, rejects expired tokens and
 unsupported algorithms, and refreshes keys only through bounded,
 redirect-free requests that ignore ambient proxies. HTTPS is the default;
@@ -63,8 +71,9 @@ loopback HTTP supports isolated tests, and an explicit private-HTTP opt-in
 permits only DNS-pinned container service names or private IP literals while
 still rejecting the IPv6 instance-metadata endpoint. A fresh unknown key
 identifier triggers one single-flight refresh, globally limited to once every
-five seconds. Its claims are used for audit context, not to invent local
-authorization rules.
+five seconds. Verified claims are attached to the HTTP request extensions;
+the server does not currently emit them as a per-user operation audit trail or
+use them to invent local authorization rules.
 
 The MCP path also enforces an exact host-authority allowlist, an explicit
 browser-origin allowlist, a one MiB default body bound, a 32-request default
@@ -535,17 +544,15 @@ so the MCP catalog marks that operation observable and non-idempotent rather
 than calling it read-only. Its sealed observable-read execution path sends the
 GET only once, including after an authentication rejection.
 
-Request logs contain request IDs, authenticated gateway principal, tool name,
-risk class, upstream status class, latency, and affected resource identifiers
-when safe. Recording the operation an executor ran belongs in that set and is
-not yet implemented; without it a log entry names only the executor, which no
-longer identifies what was served.
+The server emits lifecycle and bounded refusal diagnostics on stderr. HTTP
+tracing provides transport events; there is no complete per-operation audit
+trail containing caller identity, operation name, and affected resources. An
+upstream gateway can provide caller attribution and operation auditing.
 
 They exclude authorization headers, MCP arguments and results, secret values,
 private keys, certificates, and request/response bodies.
 
-The community Infisical edition does not provide all enterprise audit and RBAC
-features. Gateway and server logs therefore improve caller attribution, but the
-upstream service will still see the shared Machine Identity rather than the
-human caller. This is an explicit operational tradeoff, not equivalent to
-native per-user Infisical audit history.
+The upstream service sees the shared Machine Identity rather than the human
+caller in every transport profile. A gateway's caller audit is separate from
+Infisical's machine-identity audit history. Available upstream audit and RBAC
+features depend on the deployed Infisical edition.

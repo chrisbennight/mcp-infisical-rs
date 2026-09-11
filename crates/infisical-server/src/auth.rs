@@ -32,7 +32,7 @@ const MAXIMUM_IDENTITY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_JWKS_CACHE_TTL: Duration = Duration::from_hours(1);
 const UNKNOWN_KEY_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
-/// Current and optional previous gateway service credentials.
+/// Current and optional previous HTTP connection credentials.
 pub struct GatewayBearers {
     current: SecretValue,
     previous: Option<SecretValue>,
@@ -84,7 +84,7 @@ impl std::fmt::Debug for GatewayBearers {
 pub enum BearerConfigError {
     #[error("{variable} must contain at least 32 bytes")]
     TooShort { variable: &'static str },
-    #[error("current and previous gateway bearer values must differ")]
+    #[error("current and previous MCP bearer values must differ")]
     DuplicateRotationValues,
     #[error("{variable} must not contain whitespace")]
     ContainsWhitespace { variable: &'static str },
@@ -420,7 +420,7 @@ fn validate_jwk(jwk: &Jwk) -> Result<(), IdentityVerifierError> {
 #[derive(Clone)]
 pub struct IngressAuth {
     bearers: Arc<GatewayBearers>,
-    verifier: IdentityVerifier,
+    verifier: Option<IdentityVerifier>,
     allowed_hosts: Arc<[String]>,
     allowed_origins: Arc<[String]>,
 }
@@ -429,7 +429,7 @@ impl IngressAuth {
     #[must_use]
     pub fn new(
         bearers: Arc<GatewayBearers>,
-        verifier: IdentityVerifier,
+        verifier: Option<IdentityVerifier>,
         allowed_hosts: Vec<String>,
         allowed_origins: Vec<String>,
     ) -> Self {
@@ -447,7 +447,7 @@ struct AuthErrorBody {
     error: &'static str,
 }
 
-pub async fn require_gateway(
+pub async fn require_mcp_authentication(
     State(auth): State<IngressAuth>,
     mut request: Request,
     next: Next,
@@ -464,13 +464,15 @@ pub async fn require_gateway(
     if !auth.bearers.accepts(bearer.as_bytes()) {
         return unauthorized();
     }
-    let Some(identity) = single_header(request.headers(), IDENTITY_HEADER) else {
-        return unauthorized();
-    };
-    let Ok(principal) = auth.verifier.verify(identity).await else {
-        return unauthorized();
-    };
-    request.extensions_mut().insert(principal);
+    if let Some(verifier) = &auth.verifier {
+        let Some(identity) = single_header(request.headers(), IDENTITY_HEADER) else {
+            return unauthorized();
+        };
+        let Ok(principal) = verifier.verify(identity).await else {
+            return unauthorized();
+        };
+        request.extensions_mut().insert(principal);
+    }
     next.run(request).await
 }
 
@@ -512,7 +514,7 @@ fn allowed_origin(headers: &HeaderMap, allowed: &[String]) -> bool {
 }
 
 fn unauthorized() -> Response {
-    let mut response = auth_error(StatusCode::UNAUTHORIZED, "gateway_authentication_failed");
+    let mut response = auth_error(StatusCode::UNAUTHORIZED, "mcp_authentication_failed");
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
         header::HeaderValue::from_static("Bearer"),

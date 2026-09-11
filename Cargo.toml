@@ -20,7 +20,7 @@ axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
-futures-util = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 fips205 = { version = "=0.4.1", default-features = false, features = [
     "slh_dsa_sha2_128f",
     "slh_dsa_sha2_128s",
@@ -42,7 +42,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 pem-rfc7468 = { version = "=0.7.0", features = ["std"] }
 pkcs8 = "=0.10.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
-rmcp = { version = "2.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "2.0", default-features = false, features = ["server", "transport-streamable-http-server", "transport-io"] }
 rustls-pki-types = "=1.15.0"
 rustls-webpki = "=0.103.13"
 schemars = "1"
@@ -52,7 +52,7 @@ ssh-key = { version = "=0.6.7", default-features = false, features = ["ed25519",
 subtle = "2.6.1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "codec"] }
 tower = { version = "0.5", features = ["limit", "util"] }
 tower-http = { version = "0.7", features = ["timeout", "trace"] }
 tracing = "0.1"

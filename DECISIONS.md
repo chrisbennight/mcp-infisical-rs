@@ -44,11 +44,15 @@ line requires the gateway to authorize on an argument.
 
 ## Gateway authorization plus server authentication
 
+This boundary applies to the optional gateway HTTP profile. Standalone HTTP
+requires a shared connection bearer without the gateway JWT; stdio uses the local
+process boundary. Neither standalone mode implements user-policy enforcement.
+
 The tool-search gateway owns user and group authorization. The Infisical server
 still requires a separate opaque bearer on every MCP request and verifies the
 gateway-signed caller identity. The bearer proves the caller is the gateway;
-the signed identity supplies per-principal audit attribution. Neither token is
-forwarded to Infisical.
+the signed identity supplies verified request context. It does not by itself
+produce a per-user operation audit trail. Neither token is forwarded to Infisical.
 
 ## Stateless Streamable HTTP
 

@@ -39,8 +39,7 @@ sensitive_paths:
   - api-coverage/**
   - crates/infisical-api/**
   - crates/infisical-mcp/**
-  - crates/infisical-server/src/auth.rs
-  - crates/infisical-server/src/config.rs
+  - crates/infisical-server/**
   - scripts/check_api_coverage.py
   - Dockerfile
   - gateway-manifest.yaml
@@ -51,8 +50,7 @@ impact_map:
   api-coverage/**: "Pinned Infisical endpoint inventory and semantic capability-disposition contract"
   crates/infisical-api/**: "Infisical credential, typed request/response, response-bound, and mutation retry boundary"
   crates/infisical-mcp/**: "Model-visible schemas, semantic normalization, dispatch, annotations, and capability registry"
-  crates/infisical-server/src/auth.rs: "Gateway bearer and verified gateway identity JWT authentication boundary"
-  crates/infisical-server/src/config.rs: "Secret references and bounded runtime configuration boundary"
+  crates/infisical-server/**: "Transport profiles, HTTP authentication, bounded framing, secret transfer, runtime configuration, and process lifecycle"
   scripts/check_api_coverage.py: "Executable validator binding the pinned upstream inventory to the model-visible capability registry"
   Dockerfile: "Published non-root service image and build supply chain"
   gateway-manifest.yaml: "Gateway authorization, risk, side-effect, and PII classification contract"

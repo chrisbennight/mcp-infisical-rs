@@ -1,8 +1,11 @@
 # mcp-infisical-rs
 
-A fully featured, self-hosted Infisical MCP server written in Rust. It is
-designed to run behind the homelab MCP tool-search gateway and to expose typed,
-policy-classified operations rather than an arbitrary REST proxy.
+A Rust MCP server for typed Infisical operations. It supports local stdio,
+standalone stateless Streamable HTTP, and an optional gateway integration.
+
+Start with the [standalone connection guide](docs/standalone.md). The existing
+deployment and ingress reference below describes the default gateway profile;
+standalone callers do not need its signed identity or user-policy infrastructure.
 
 The current implementation establishes the executable transport and ingress
 security boundary. It serves stateless MCP Streamable HTTP at `/mcp`, exposes a
@@ -117,7 +120,7 @@ Certificate material transfer imports a validated leaf plus optional matching
 private key and issuer chain from governed uploads, and reconciles the created
 inventory record after the single mutation. Public certificate retrieval stays
 inline. Confirmed bundle and private-key retrieval use governed reference
-delivery by default and cryptographically bind returned keys to the selected
+delivery by default when the file plane is configured and cryptographically bind returned keys to the selected
 leaf.
 SSH Access administration adds bounded CA inventory, exact CA and public-key
 reads, confirmed internal or external-key creation, complete lifecycle
@@ -267,7 +270,7 @@ workflow touches the live stack.
 
 ## Ingress configuration
 
-All `/mcp` requests require both `Authorization: Bearer …` and
+In the gateway profile, all `/mcp` requests require both `Authorization: Bearer …` and
 `X-MCP-Identity: …`. The bearer must contain at least 32 bytes and the identity
 JWT must use EdDSA with a known `kid`, the configured issuer, audience
 `infisical` (fixed by the server), and valid temporal claims. A fresh unknown
