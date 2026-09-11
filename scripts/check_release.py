@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 BUILD_WORKFLOW = REPO_ROOT / ".gitea" / "workflows" / "build.yml"
 TEST_WORKFLOW = REPO_ROOT / ".gitea" / "workflows" / "test.yml"
+GITHUB_TEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 
 
 def _indent(line: str) -> int:
@@ -341,10 +342,39 @@ def validate_test_workflow(text: str) -> list[str]:
     return errors
 
 
+def validate_github_test_workflow(text: str) -> list[str]:
+    """Check the public workflow's validation and container contract."""
+    errors = validate_test_workflow(text)
+    permissions = _mapping_block(text, "permissions", 0)
+    if (permissions or "").strip() != "permissions:\n  contents: read":
+        errors.append("GitHub checks must use only contents: read permissions")
+    jobs = _mapping_block(text, "jobs", 0)
+    test = _mapping_block(jobs or "", "test", 2)
+    if not _has_yaml_line(test, "    runs-on: ubuntu-latest"):
+        errors.append("GitHub checks must use the hosted Ubuntu runner")
+    if not _has_yaml_line(test, "    timeout-minutes: 45"):
+        errors.append("GitHub checks must have a bounded job timeout")
+    for name, command in (
+        ("Format", "cargo fmt --all -- --check"),
+        ("Clippy", "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"),
+        ("Tests", "cargo test --workspace --all-features --locked"),
+        ("Rust documentation", "cargo doc --workspace --no-deps --locked"),
+        ("Documentation contract", "python3 scripts/check_docs.py"),
+        ("API coverage contract", "python3 scripts/check_api_coverage.py"),
+        ("Documentation validator tests", "python3 -m unittest discover -s scripts/tests"),
+        ("Release contract", "python3 scripts/check_release.py"),
+    ):
+        step = _require_step(errors, test or "", name)
+        if not _has_yaml_line(step, f"        run: {command}"):
+            errors.append(f"GitHub checks must run {command}")
+    return errors
+
+
 def main() -> int:
     errors = validate_dockerfile(DOCKERFILE.read_text(encoding="utf-8"))
     errors.extend(validate_build_workflow(BUILD_WORKFLOW.read_text(encoding="utf-8")))
     errors.extend(validate_test_workflow(TEST_WORKFLOW.read_text(encoding="utf-8")))
+    errors.extend(validate_github_test_workflow(GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")))
     if errors:
         for error in errors:
             print(f"release contract: {error}", file=sys.stderr)

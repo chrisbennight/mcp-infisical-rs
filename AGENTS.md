@@ -60,10 +60,11 @@ be successful on the current head. A missing AERB status is a repository
 enrollment failure, never a reason to waive the review.
 
 AERB's repository-managed review and security policy lives under
-`.gitea/pr-review/`. `RECOMMEND REVIEW` remains blocking; only a current-head
+`.github/pr-review/`. `RECOMMEND REVIEW` remains blocking; only a current-head
 `RECOMMEND MERGE` satisfies the review gate.
 
-AERB triggers on a pushed head, not on comments. When addressing a finding,
-post the reasoning comment before pushing the fix so the next review sees both.
+Request an AERB GitHub review after each pushed PR head. When addressing a
+finding, post the reasoning comment before pushing the fix so the next review
+sees both.
 The pull-request description is immutable after creation; corrections belong in
 comments.

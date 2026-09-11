@@ -1,5 +1,5 @@
 enabled: true
-repo: bennight/mcp-infisical-rs
+repo: chrisbennight/mcp-infisical-rs
 base_branches:
   - main
 renovate_mode: eval
@@ -45,7 +45,8 @@ sensitive_paths:
   - Dockerfile
   - gateway-manifest.yaml
   - .gitea/workflows/**
-  - .gitea/pr-review/**
+  - .github/workflows/**
+  - .github/pr-review/**
 impact_map:
   api-coverage/**: "Pinned Infisical endpoint inventory and semantic capability-disposition contract"
   crates/infisical-api/**: "Infisical credential, typed request/response, response-bound, and mutation retry boundary"
@@ -56,7 +57,8 @@ impact_map:
   Dockerfile: "Published non-root service image and build supply chain"
   gateway-manifest.yaml: "Gateway authorization, risk, side-effect, and PII classification contract"
   .gitea/workflows/**: "CI, registry publication, and dependency-review boundary"
-  .gitea/pr-review/**: "AERB review and security policy"
+  .github/workflows/**: "GitHub validation and supply-chain boundary"
+  .github/pr-review/**: "AERB review and security policy"
 research:
   enabled: true
   max_collect_steps: 15

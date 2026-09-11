@@ -12,6 +12,22 @@ SPEC.loader.exec_module(CHECK_RELEASE)
 
 
 class TestReleaseContract(unittest.TestCase):
+    def test_github_checks_preserve_validation_and_runtime_hardening(self) -> None:
+        workflow = CHECK_RELEASE.GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(CHECK_RELEASE.validate_github_test_workflow(workflow), [])
+        for before, after, expected in (
+            ("contents: read", "contents: write", "contents: read permissions"),
+            ("run: cargo test --workspace --all-features --locked", "run: true", "must run cargo test"),
+            ("--cap-drop ALL", "--cap-drop NET_RAW", "Smoke hardened runtime container"),
+            ("runs-on: ubuntu-latest", "runs-on: self-hosted", "hosted Ubuntu runner"),
+        ):
+            with self.subTest(change=before):
+                self.assertIn(before, workflow)
+                errors = CHECK_RELEASE.validate_github_test_workflow(
+                    workflow.replace(before, after)
+                )
+                self.assertTrue(any(expected in error for error in errors), errors)
+
     def test_repository_release_contract_is_valid(self) -> None:
         self.assertEqual(
             CHECK_RELEASE.validate_dockerfile(
