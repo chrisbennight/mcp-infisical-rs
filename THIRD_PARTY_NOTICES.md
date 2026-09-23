@@ -10,6 +10,15 @@ The notice below reproduces the upstream license at that commit. Runtime Rust
 dependencies retain their individual licenses; the lockfile identifies their
 versions. The server's MIT license does not replace those licenses.
 
+## Manrope font
+
+The unmodified font in `docs/branding/fonts/Manrope.ttf` is copyright 2018
+The Manrope Project Authors and licensed under the
+[SIL Open Font License 1.1](docs/branding/fonts/OFL-Manrope.txt).
+[Source URLs and SHA-256 checksums](docs/branding/fonts/sources.json) identify
+the font and license. The font is used to create outlined artwork; it is not
+a runtime dependency or a font service loaded by readers.
+
 ## Infisical documentation
 
 Copyright (c) 2022 Infisical Inc.

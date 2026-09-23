@@ -32,6 +32,10 @@ operation dispatch, and classifications; `infisical-server` owns transports,
 configuration, authentication, and lifecycle. Read the
 [architecture](docs/architecture.md) and [repository rules](AGENTS.md).
 
+For documentation artwork, follow the [visual identity guide](docs/branding/README.md).
+Keep editable sources, generated exports, and font notices together. Branding
+tools are only needed when changing those assets.
+
 ## Pull requests
 
 Describe the problem, resulting behavior, relevant risks, and actual validation.

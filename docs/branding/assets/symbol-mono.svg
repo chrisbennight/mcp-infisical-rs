@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-labelledby="title">
+<title id="title">mcp-infisical-rs</title>
+<g xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#23201B" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M28 14H12V82H28M68 14H84V82H68" />
+  </g>
+  <path xmlns="http://www.w3.org/2000/svg" d="M32 48H58" fill="none" stroke="#23201B" stroke-width="10" stroke-linecap="round" />
+  <circle xmlns="http://www.w3.org/2000/svg" cx="58" cy="48" r="12" fill="#23201B" />
+
+</svg>
