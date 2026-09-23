@@ -1,5 +1,4 @@
 /target/
-/.worktrees/
 /.idea/
 /.vscode/
 .DS_Store
