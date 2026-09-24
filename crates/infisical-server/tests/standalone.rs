@@ -1,3 +1,7 @@
+mod support;
+
+use support::server_binary;
+
 use std::{process::Stdio, time::Duration};
 
 use serde_json::{Value, json};
@@ -15,7 +19,7 @@ const BEARER: &str = "standalone-test-bearer-value-00001";
 const DEADLINE: Duration = Duration::from_secs(10);
 
 fn command(api_url: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"));
+    let mut command = Command::new(server_binary());
     command
         .env_clear()
         .env("INFISICAL_API_URL", api_url)

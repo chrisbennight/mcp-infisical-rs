@@ -98,12 +98,12 @@ impl ServerHandler for InfisicalMcp {
             .with_instructions(MCP_INSTRUCTIONS)
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _params: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, McpError> {
-        Ok(Self::list_tools_payload())
+    ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send {
+        std::future::ready(Ok(Self::list_tools_payload()))
     }
 
     async fn call_tool(
@@ -114,83 +114,85 @@ impl ServerHandler for InfisicalMcp {
         tools::dispatch(&self.client, self.files.as_deref(), params).await
     }
 
-    async fn on_custom_request(
+    fn on_custom_request(
         &self,
         request: CustomRequest,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CustomResult, McpError> {
-        // `_meta` may carry the caller's file capability declaration; it is deliberately
-        // not read, because a caller reaches this method only after seeing a reference
-        // this server minted.
-        #[derive(Deserialize)]
-        struct AuthorizeDownloadParams {
-            uri: String,
-        }
-
-        // A plane that is off answers exactly like a server that never had one:
-        // method-not-found is what a file-aware intermediary reads as "no native file
-        // transfer", so the absence is the advertisement. The requested method is not
-        // reflected: it is caller-controlled, and a misplaced credential in it would be
-        // copied into an error a client stores and displays.
-        let refused = || {
-            Err(McpError::new(
-                ErrorCode::METHOD_NOT_FOUND,
-                "the requested method is not one this server provides",
-                None,
-            ))
-        };
-        let Some(plane) = self.files.as_deref() else {
-            return refused();
-        };
-
-        let authorized = match request.method.as_str() {
-            files::AUTHORIZE_DOWNLOAD_METHOD => {
-                let params: AuthorizeDownloadParams = request
-                    .params
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .ok()
-                    .flatten()
-                    .ok_or_else(|| {
-                        McpError::invalid_params(
-                            "files/authorizeDownload params must carry a uri",
-                            None,
-                        )
-                    })?;
-                plane
-                    .authorize_download(&params.uri)
-                    .map_err(|error| McpError::invalid_params(error.to_string(), None))
-                    .and_then(|authorized| {
-                        serde_json::to_value(authorized).map_err(|_| {
-                            McpError::internal_error("serialize download authorization", None)
-                        })
-                    })?
+    ) -> impl std::future::Future<Output = Result<CustomResult, McpError>> + Send {
+        futures_util::future::lazy(move |_| {
+            // `_meta` may carry the caller's file capability declaration; it is deliberately
+            // not read, because a caller reaches this method only after seeing a reference
+            // this server minted.
+            #[derive(Deserialize)]
+            struct AuthorizeDownloadParams {
+                uri: String,
             }
-            files::AUTHORIZE_UPLOAD_METHOD => {
-                // Every param is optional in the draft, so absent params are legal.
-                let params: files::AuthorizeUploadParams = request
-                    .params
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|_| {
-                        McpError::invalid_params(
-                            "files/authorizeUpload params do not match the declared shape",
-                            None,
-                        )
-                    })?
-                    .unwrap_or_default();
-                plane
-                    .authorize_upload(params)
-                    .map_err(|error| McpError::invalid_params(error.to_string(), None))
-                    .and_then(|authorized| {
-                        serde_json::to_value(authorized).map_err(|_| {
-                            McpError::internal_error("serialize upload authorization", None)
-                        })
-                    })?
-            }
-            _ => return refused(),
-        };
-        Ok(CustomResult::new(authorized))
+
+            // A plane that is off answers exactly like a server that never had one:
+            // method-not-found is what a file-aware intermediary reads as "no native file
+            // transfer", so the absence is the advertisement. The requested method is not
+            // reflected: it is caller-controlled, and a misplaced credential in it would be
+            // copied into an error a client stores and displays.
+            let refused = || {
+                Err(McpError::new(
+                    ErrorCode::METHOD_NOT_FOUND,
+                    "the requested method is not one this server provides",
+                    None,
+                ))
+            };
+            let Some(plane) = self.files.as_deref() else {
+                return refused();
+            };
+
+            let authorized = match request.method.as_str() {
+                files::AUTHORIZE_DOWNLOAD_METHOD => {
+                    let params: AuthorizeDownloadParams = request
+                        .params
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .ok()
+                        .flatten()
+                        .ok_or_else(|| {
+                            McpError::invalid_params(
+                                "files/authorizeDownload params must carry a uri",
+                                None,
+                            )
+                        })?;
+                    plane
+                        .authorize_download(&params.uri)
+                        .map_err(|error| McpError::invalid_params(error.to_string(), None))
+                        .and_then(|authorized| {
+                            serde_json::to_value(authorized).map_err(|_| {
+                                McpError::internal_error("serialize download authorization", None)
+                            })
+                        })?
+                }
+                files::AUTHORIZE_UPLOAD_METHOD => {
+                    // Every param is optional in the draft, so absent params are legal.
+                    let params: files::AuthorizeUploadParams = request
+                        .params
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| {
+                            McpError::invalid_params(
+                                "files/authorizeUpload params do not match the declared shape",
+                                None,
+                            )
+                        })?
+                        .unwrap_or_default();
+                    plane
+                        .authorize_upload(params)
+                        .map_err(|error| McpError::invalid_params(error.to_string(), None))
+                        .and_then(|authorized| {
+                            serde_json::to_value(authorized).map_err(|_| {
+                                McpError::internal_error("serialize upload authorization", None)
+                            })
+                        })?
+                }
+                _ => return refused(),
+            };
+            Ok(CustomResult::new(authorized))
+        })
     }
 }
 

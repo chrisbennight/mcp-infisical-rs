@@ -1,3 +1,7 @@
+mod support;
+
+use support::server_binary;
+
 use std::{
     net::TcpListener,
     process::{Command, Stdio},
@@ -11,7 +15,7 @@ use wiremock::{
 };
 
 fn configured_server_command(api_url: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"));
+    let mut command = Command::new(server_binary());
     command
         .env(
             "INFISICAL_MCP_BEARER_CURRENT",
@@ -34,7 +38,7 @@ fn configured_server_command(api_url: &str) -> Command {
 
 #[test]
 fn version_reports_the_workspace_package_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"))
+    let output = Command::new(server_binary())
         .arg("--version")
         .output()
         .expect("version command must start");
@@ -49,7 +53,7 @@ fn version_reports_the_workspace_package_version() {
 
 #[test]
 fn server_fails_closed_when_gateway_credentials_are_missing() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"))
+    let output = Command::new(server_binary())
         .env_remove("INFISICAL_MCP_BEARER_CURRENT")
         .env_remove("INFISICAL_MCP_BEARER_PREVIOUS")
         .env_remove("INFISICAL_MCP_IDENTITY_ISSUER")
@@ -69,7 +73,7 @@ fn server_fails_closed_when_gateway_credentials_are_missing() {
 
 #[test]
 fn server_fails_closed_when_infisical_credentials_are_missing() {
-    let output = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"))
+    let output = Command::new(server_binary())
         .env(
             "INFISICAL_MCP_BEARER_CURRENT",
             "current-gateway-bearer-value-0001",
@@ -162,7 +166,7 @@ async fn native_healthcheck_needs_only_the_listener_coordinates() {
     let proxy_url = proxy_server.uri();
 
     let output = tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"))
+        Command::new(server_binary())
             .args([
                 "--healthcheck",
                 "--host",
@@ -229,7 +233,7 @@ fn sigterm_uses_the_graceful_shutdown_path() {
             Instant::now() < ready_deadline,
             "server did not start in time"
         );
-        let healthcheck = Command::new(env!("CARGO_BIN_EXE_mcp-infisical-rs"))
+        let healthcheck = Command::new(server_binary())
             .args([
                 "--healthcheck",
                 "--host",
