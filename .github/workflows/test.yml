@@ -20,8 +20,8 @@ jobs:
     timeout-minutes: 45
     env:
       # renovate: datasource=github-tags depName=rust-lang/rustup
-      RUSTUP_INIT_VERSION: "1.29.0"
-      RUSTUP_INIT_SHA256: "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+      RUSTUP_INIT_VERSION: "1.29.1"
+      RUSTUP_INIT_SHA256: "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
       CARGO_TERM_COLOR: always
       SMOKE_IMAGE: mcp-infisical-rs:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
       SMOKE_CONTAINER: mcp-infisical-pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}

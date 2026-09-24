@@ -297,17 +297,29 @@ pub enum CertificateSignatureAlgorithm {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateProfileDefaults {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub common_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub key_algorithm: Option<CertificateKeyAlgorithm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature_algorithm: Option<CertificateSignatureAlgorithm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub key_usages: Option<Vec<CertificateKeyUsage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub extended_key_usages: Option<Vec<CertificateExtendedKeyUsage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub basic_constraints: Option<CertificateProfileBasicConstraints>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub organizational_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locality: Option<String>,
 }
 
@@ -315,7 +327,9 @@ pub struct CertificateProfileDefaults {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateProfileBasicConstraints {
+    #[serde(rename = "isCA")]
     pub is_ca: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path_length: Option<u8>,
 }
 
@@ -4359,6 +4373,46 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn partial_defaults_omit_absent_fields_but_clearing_remains_explicit() {
+        let profile_id = CertificateProfileId::new(PROFILE_ID).unwrap();
+        let change = CertificateProfileChange::new(
+            None,
+            None,
+            None,
+            None,
+            Some(CertificateProfileDefaultsChange::Set(Box::new(
+                profile_defaults(),
+            ))),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(update_request(&profile_id, change)).unwrap(),
+            json!({"defaults": {"ttlDays": 30}})
+        );
+        let clear = CertificateProfileChange::new(
+            None,
+            None,
+            None,
+            None,
+            Some(CertificateProfileDefaultsChange::Clear),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(update_request(&profile_id, clear)).unwrap(),
+            json!({"defaults": null})
+        );
+        let mut defaults = profile_defaults();
+        defaults.basic_constraints = Some(super::CertificateProfileBasicConstraints {
+            is_ca: false,
+            path_length: None,
+        });
+        assert_eq!(
+            serde_json::to_value(defaults).unwrap(),
+            json!({"ttlDays": 30, "basicConstraints": {"isCA": false}})
+        );
     }
 
     #[test]

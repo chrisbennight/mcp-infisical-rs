@@ -595,6 +595,11 @@ The pinned PATCH route cannot safely switch enrollment families: its service
 only updates a configuration row that already exists and does not create the
 new family’s row. The update tool therefore supports non-empty metadata,
 defaults, public external configuration, and same-family enrollment changes.
+A partial defaults object sends only supplied fields; for example,
+`{"ttlDays": 365}` does not send null subject names or algorithms.
+`clearDefaults: true` still sends an explicit null for the whole defaults object.
+Basic constraints use `isCa` in tool inputs and Infisical's `isCA` spelling in
+upstream requests and returned metadata.
 It preflights exact profile ownership and re-reads configuration after a
 same-family change so the public fields must reflect the request. Update and
 delete require confirmation; delete accepts only the preflighted core profile
