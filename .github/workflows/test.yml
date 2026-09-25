@@ -194,6 +194,9 @@ jobs:
             --scanner-metadata .security/trivy-metadata.json \
             --image-id "$image_id" --output .security/image-dispositions.json
 
+      - name: Qualify image executable
+        run: python3 scripts/qualify_image.py --sudo --image "$SMOKE_IMAGE" --output .security/qualification
+
       - name: Retain security evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -202,6 +205,9 @@ jobs:
           path: |
             .security/*.json
             .security/*.txt
+            .security/qualification/*.json
+            .security/qualification/*.txt
+            .security/qualification/*.log
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 90

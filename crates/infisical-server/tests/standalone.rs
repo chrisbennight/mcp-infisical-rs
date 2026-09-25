@@ -566,3 +566,78 @@ async fn stdio_returns_safe_structured_argument_errors_without_upstream_requests
     assert!(!diagnostics.contains("stdio-sensitive-input-canary"));
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn stdio_describes_arguments_and_refuses_invalid_calls_before_upstream() {
+    let upstream = MockServer::start().await;
+    let mut child = command(&upstream.uri())
+        .args(["--transport", "stdio"])
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    send_message(&mut child, &initialize()).await;
+    assert!(read_message(&mut reader).await.get("result").is_some());
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"operations.describe","arguments":{"operation":"projects.list"}}}),
+    )
+    .await;
+    let description = read_message(&mut reader).await;
+    let schema = &description["result"]["structuredContent"]["inputSchema"];
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["limit"]["type"], "integer");
+    for (arguments, structured_error) in [
+        (
+            json!({"operation":"projects.list","arguments":{"limit":"fixture-invalid-limit"}}),
+            true,
+        ),
+        (
+            json!({"operation":"projects.list","arguments":{},"resultDelivery":"file"}),
+            true,
+        ),
+        (
+            json!({"operation":"projects.list","arguments":{},"unknown":"fixture-unknown-field"}),
+            false,
+        ),
+    ] {
+        send_message(
+            &mut child,
+            &json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"infisical.read","arguments":arguments}}),
+        )
+        .await;
+        let response = read_message(&mut reader).await;
+        if structured_error {
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(
+                response["result"]["structuredContent"]["error"]["effect"],
+                "notStarted"
+            );
+            assert_eq!(
+                response["result"]["structuredContent"]["error"]["category"],
+                "validation"
+            );
+        } else {
+            assert_eq!(response["error"]["code"], -32602);
+            assert!(response.get("result").is_none());
+        }
+        assert!(!response.to_string().contains("fixture-invalid-limit"));
+        assert!(!response.to_string().contains("fixture-unknown-field"));
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    drop(child.stdin.take());
+    assert!(
+        timeout(DEADLINE, child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}

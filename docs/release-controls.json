@@ -1,0 +1,55 @@
+{
+  "observedDate": "2026-09-25",
+  "repository": "chrisbennight/mcp-infisical-rs",
+  "visibility": "public",
+  "main": {
+    "source": "https://api.github.com/repos/chrisbennight/mcp-infisical-rs/branches/main/protection",
+    "strict": true,
+    "enforceAdmins": true,
+    "requiredChecks": [
+      {
+        "app_id": 15368,
+        "context": "test"
+      },
+      {
+        "app_id": 4533096,
+        "context": "pr-review/gate"
+      }
+    ],
+    "forcePushes": false,
+    "deletions": false
+  },
+  "versionTags": {
+    "source": "https://github.com/chrisbennight/mcp-infisical-rs/rules/23910379",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "refs/tags/v*"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "update"
+      }
+    ],
+    "bypassActors": []
+  },
+  "privateVulnerabilityReporting": {
+    "source": "https://api.github.com/repos/chrisbennight/mcp-infisical-rs/private-vulnerability-reporting",
+    "enabled": true
+  },
+  "publication": {
+    "variable": "ENABLE_RELEASE_PUBLICATION",
+    "value": "true"
+  },
+  "packageVisibility": {
+    "status": "unverified",
+    "reason": "Package API requires a user credential with read:packages; the connected service has no user credential."
+  }
+}
