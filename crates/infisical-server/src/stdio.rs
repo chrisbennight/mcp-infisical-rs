@@ -41,6 +41,7 @@ pub async fn serve(settings: StdioSettings, cancellation: CancellationToken) -> 
     )
     .sink_map_err(|_| std::io::Error::other("MCP stdio output failed"));
     let service = InfisicalMcp::new(settings.infisical)
+        .with_operation_profile(settings.operation_profile)
         .with_runtime(infisical_mcp::runtime::RuntimeSettings::Stdio {
             max_message_bytes: settings.max_body_bytes,
         })

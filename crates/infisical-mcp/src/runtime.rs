@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::files::SecretFilePlane;
 
 /// Revision of the discovery schemas; clients must include it in cache keys.
-pub const SCHEMA_REVISION: &str = "2026-09-25.5";
+pub const SCHEMA_REVISION: &str = "2026-09-25.6";
 
 /// gateway: bearer plus identity JWT; standalone: bearer only.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
@@ -51,6 +51,8 @@ pub enum Transport {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeCapabilities {
+    /// Static operation capabilities enabled in this instance.
+    pub operation_profile: crate::policy::OperationProfile,
     /// Transport currently serving this handler.
     pub transport: Transport,
     /// HTTP authentication profile; absent for stdio or an undeclared library host.
@@ -129,6 +131,7 @@ impl RuntimeSettings {
                 ),
             };
         RuntimeCapabilities {
+            operation_profile: crate::policy::OperationProfile::Full,
             transport,
             http_profile,
             limits: RuntimeLimits {
