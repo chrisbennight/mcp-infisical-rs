@@ -128,8 +128,8 @@ fn input_only_schema_and_brief_pages_reduce_serialized_results() {
     let brief = list(json!({}));
     let full_catalog = structured(json!({
         "operations": described_operations().iter().map(|operation| json!({
-            "name": operation.name, "executor": operation.executor,
-            "tier": operation.tier, "description": operation.description
+            "name": operation.name, "executor": operation.tier.executor(),
+            "tier": operation.tier.slug(), "description": operation.description
         })).collect::<Vec<_>>(),
         "total": described_operations().len()
     }))

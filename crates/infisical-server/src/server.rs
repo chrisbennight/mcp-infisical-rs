@@ -1016,6 +1016,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_executor_result_keeps_operation_guidance_without_payload_values() {
+        let (router, key, upstream) = test_router().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/universal-auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "result-budget-fixture-token",
+                "expiresIn": 60, "accessTokenMaxTTL": 120, "tokenType": "Bearer"
+            })))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let projects: Vec<_> = (0..100)
+            .map(|index| json!({
+                "id": format!("project-{index}"), "name": "Project", "slug": format!("project-{index}"),
+                "type": "secret-manager", "orgId": "org-1",
+                "description": "result-budget-canary".repeat(100), "environments": []
+            }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"projects": projects})))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        let response = call_authenticated_tool(
+            router,
+            &identity,
+            2,
+            "infisical.read",
+            json!({"operation": "projects.list", "arguments": {"limit": 100}}),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("projects.list produced"));
+        assert!(text.contains("Retry with a smaller limit"));
+        assert!(!text.contains("result-budget-canary"));
+        assert!(!text.contains("must not be repeated"));
+        assert_eq!(upstream.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
     async fn authenticated_tool_call_uses_the_dedicated_infisical_client() {
         let (router, key, upstream_server) = test_router().await;
         Mock::given(method("POST"))

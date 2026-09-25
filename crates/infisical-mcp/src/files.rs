@@ -442,7 +442,7 @@ impl std::io::Write for CountingWriter {
 
 /// Zeroize every string in the envelope tree before it is dropped, so the exposed
 /// copies the tree was built from do not survive in freed allocator storage.
-fn zeroize_tree(value: &mut Value) {
+pub(crate) fn zeroize_tree(value: &mut Value) {
     use zeroize::Zeroize as _;
     match value {
         Value::String(text) => text.zeroize(),

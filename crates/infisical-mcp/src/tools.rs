@@ -9,6 +9,10 @@ use std::{
 #[path = "discovery_tests.rs"]
 mod discovery_tests;
 
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;
+
 use infisical_api::{
     AdditionalPrivilegeChange, AdditionalPrivilegeCreation, AdditionalPrivilegeId,
     AdditionalPrivilegeLifetime, AdditionalPrivilegeSlug, AdditionalPrivilegeStartTime,
@@ -9799,35 +9803,35 @@ pub(crate) fn catalog() -> ListToolsResult {
              Use server.capabilities for deployment limits and compiled support.",
             false,
         )
-        .tool,
+        .materialize(),
         read_tool::<EmptyInput, ServerCapabilitiesOutput>(
             SERVER_CAPABILITIES_TOOL,
             "Report compiled capabilities, unavailable reasons, and this instance's delivery and \
              limit settings. Answers locally; upstream permission and license entitlement are not probed.",
             false,
         )
-        .tool,
+        .materialize(),
         read_tool::<OperationsListInput, OperationsListOutput>(
             OPERATIONS_LIST_TOOL,
             "Find an operation by intent, tier, or name prefix. Returns a bounded page and \
              nextOffset; retain filters when continuing. Fetch schemas with operations.describe.",
             false,
         )
-        .tool,
+        .materialize(),
         read_tool::<OperationsDescribeInput, OperationsDescribeOutput>(
             OPERATIONS_DESCRIBE_TOOL,
             "Get one operation's executor, availability, and schemas. Set includeOutputSchema \
              false for input only. Pass values matching inputSchema as executor arguments.",
             false,
         )
-        .tool,
+        .materialize(),
         read_tool::<TypeDescribeInput, TypeDescribeOutput>(
             TYPES_DESCRIBE_TOOL,
             "Get a resource's data model, such as a project, a secret's metadata, or a dynamic secret. \
              Use operations.describe for a call's arguments and result.",
             false,
         )
-        .tool,
+        .materialize(),
     ];
     tools.extend(executor_tools());
 
@@ -9844,17 +9848,7 @@ pub(crate) fn catalog() -> ListToolsResult {
 /// decide what an unknown operation means rather than receiving a default that
 /// understates it.
 pub(crate) fn tool_tier(name: &str) -> Option<ToolTier> {
-    static TIERS: OnceLock<HashMap<String, ToolTier>> = OnceLock::new();
-
-    TIERS
-        .get_or_init(|| {
-            operation_catalog()
-                .into_iter()
-                .map(|tiered| (tiered.tool.name.to_string(), tiered.tier))
-                .collect()
-        })
-        .get(name)
-        .copied()
+    operation_definition(name).map(|operation| operation.tier)
 }
 
 /// The typed operations an executor can reach, with their tiers.
@@ -9863,11 +9857,17 @@ pub(crate) fn tool_tier(name: &str) -> Option<ToolTier> {
 /// no longer listed as individual tools.
 #[cfg(test)]
 pub(crate) fn operations() -> Vec<TieredTool> {
-    operation_catalog()
+    described_operations()
+        .iter()
+        .map(|operation| TieredTool {
+            tool: operation.materialize(),
+            tier: operation.tier,
+        })
+        .collect()
 }
 
 /// The typed operations, which dispatch serves but the catalog no longer lists.
-fn operation_catalog() -> Vec<TieredTool> {
+fn build_operation_catalog() -> Vec<OperationDefinition> {
     let mut tools = discovery_tools().into_iter().collect::<Vec<_>>();
     tools.extend(project_environment_tools());
     tools.extend(folder_tag_tools());
@@ -9896,7 +9896,7 @@ fn operation_catalog() -> Vec<TieredTool> {
     tools
 }
 
-fn ssh_certificate_authority_tools() -> [TieredTool; 14] {
+fn ssh_certificate_authority_tools() -> [OperationDefinition; 14] {
     [
         observable_read_tool::<SshProjectInput, SshCertificateAuthoritiesListOutput>(
             SSH_CERTIFICATE_AUTHORITIES_LIST_TOOL,
@@ -9968,7 +9968,7 @@ fn ssh_certificate_authority_tools() -> [TieredTool; 14] {
     ]
 }
 
-fn ssh_host_tools() -> [TieredTool; 16] {
+fn ssh_host_tools() -> [OperationDefinition; 16] {
     [
         observable_read_tool::<SshProjectInput, SshHostsListOutput>(
             SSH_HOSTS_LIST_TOOL,
@@ -10047,7 +10047,7 @@ fn ssh_host_tools() -> [TieredTool; 16] {
 }
 
 #[allow(clippy::too_many_lines)]
-fn code_signer_tools() -> [TieredTool; 23] {
+fn code_signer_tools() -> [OperationDefinition; 23] {
     [
         observable_read_tool::<CodeSignersListInput, Page<CodeSigner>>(
             CODE_SIGNERS_LIST_TOOL,
@@ -10157,7 +10157,7 @@ fn code_signer_tools() -> [TieredTool; 23] {
     ]
 }
 
-fn certificate_policy_tools() -> [TieredTool; 5] {
+fn certificate_policy_tools() -> [OperationDefinition; 5] {
     [
         observable_read_tool::<CertificatePoliciesListInput, Page<CertificatePolicy>>(
             CERTIFICATE_POLICIES_LIST_TOOL,
@@ -10185,7 +10185,7 @@ fn certificate_policy_tools() -> [TieredTool; 5] {
     ]
 }
 
-fn certificate_tools() -> [TieredTool; 15] {
+fn certificate_tools() -> [OperationDefinition; 15] {
     [
         observable_read_tool::<CertificatesListInput, Page<Certificate>>(
             CERTIFICATES_LIST_TOOL,
@@ -10257,7 +10257,7 @@ fn certificate_tools() -> [TieredTool; 15] {
     ]
 }
 
-fn certificate_profile_tools() -> [TieredTool; 9] {
+fn certificate_profile_tools() -> [OperationDefinition; 9] {
     [
         observable_read_tool::<CertificateProfilesListInput, Page<CertificateProfile>>(
             CERTIFICATE_PROFILES_LIST_TOOL,
@@ -10310,7 +10310,7 @@ fn certificate_profile_tools() -> [TieredTool; 9] {
     ]
 }
 
-fn certificate_authority_tools() -> [TieredTool; 15] {
+fn certificate_authority_tools() -> [OperationDefinition; 15] {
     [
         observable_read_tool::<CertificateAuthorityProjectInput, CertificateAuthoritiesListOutput>(
             CERTIFICATE_AUTHORITIES_LIST_TOOL,
@@ -10391,14 +10391,14 @@ fn certificate_authority_tools() -> [TieredTool; 15] {
     ]
 }
 
-fn audit_log_tools() -> [TieredTool; 1] {
+fn audit_log_tools() -> [OperationDefinition; 1] {
     [observable_read_tool::<AuditLogsListInput, Page<AuditLog>>(
         AUDIT_LOGS_LIST_TOOL,
         "List one bounded organization or project audit-log page without arbitrary actor or event metadata; requesting offset zero creates Infisical's view-audit-logs record.",
     )]
 }
 
-fn app_automation_tools() -> [TieredTool; 14] {
+fn app_automation_tools() -> [OperationDefinition; 14] {
     [
         observable_read_tool::<AppConnectionsListInput, Page<AppConnection>>(
             APP_CONNECTIONS_LIST_TOOL,
@@ -10468,7 +10468,7 @@ fn app_automation_tools() -> [TieredTool; 14] {
     ]
 }
 
-fn sql_secret_rotation_tools() -> [TieredTool; 9] {
+fn sql_secret_rotation_tools() -> [OperationDefinition; 9] {
     [
         observable_read_tool::<SqlSecretRotationTargetInput, SecretRotation>(
             SQL_SECRET_ROTATION_GET_TOOL,
@@ -10515,7 +10515,7 @@ fn sql_secret_rotation_tools() -> [TieredTool; 9] {
     ]
 }
 
-fn kms_tools() -> [TieredTool; 15] {
+fn kms_tools() -> [OperationDefinition; 15] {
     [
         observable_read_tool::<KmsKeysListInput, Page<KmsKey>>(
             KMS_KEYS_LIST_TOOL,
@@ -10589,7 +10589,7 @@ fn kms_tools() -> [TieredTool; 15] {
     ]
 }
 
-fn dynamic_secret_tools() -> [TieredTool; 10] {
+fn dynamic_secret_tools() -> [OperationDefinition; 10] {
     [
         observable_read_tool::<DynamicSecretsListInput, Page<DynamicSecret>>(
             DYNAMIC_SECRETS_LIST_TOOL,
@@ -10640,7 +10640,7 @@ fn dynamic_secret_tools() -> [TieredTool; 10] {
     ]
 }
 
-fn role_tools() -> [TieredTool; 4] {
+fn role_tools() -> [OperationDefinition; 4] {
     [
         read_tool::<ProjectPageInput, Page<RoleSummary>>(
             PROJECT_ROLES_LIST_TOOL,
@@ -10665,7 +10665,7 @@ fn role_tools() -> [TieredTool; 4] {
     ]
 }
 
-fn group_tools() -> [TieredTool; 6] {
+fn group_tools() -> [OperationDefinition; 6] {
     [
         read_tool::<GroupsListInput, Page<Group>>(
             GROUPS_LIST_TOOL,
@@ -10700,7 +10700,7 @@ fn group_tools() -> [TieredTool; 6] {
     ]
 }
 
-fn identity_project_additional_privilege_tools() -> [TieredTool; 6] {
+fn identity_project_additional_privilege_tools() -> [OperationDefinition; 6] {
     [
         read_tool::<
             IdentityProjectAdditionalPrivilegesListInput,
@@ -10753,7 +10753,7 @@ fn identity_project_additional_privilege_tools() -> [TieredTool; 6] {
     ]
 }
 
-fn discovery_tools() -> [TieredTool; 2] {
+fn discovery_tools() -> [OperationDefinition; 2] {
     [
         read_tool::<ProjectsListInput, Page<Project>>(
             PROJECTS_LIST_TOOL,
@@ -10768,7 +10768,7 @@ fn discovery_tools() -> [TieredTool; 2] {
     ]
 }
 
-fn project_environment_tools() -> [TieredTool; 9] {
+fn project_environment_tools() -> [OperationDefinition; 9] {
     [
         mutation_tool::<ProjectCreateInput, Project>(
             PROJECTS_CREATE_TOOL,
@@ -10818,7 +10818,7 @@ fn project_environment_tools() -> [TieredTool; 9] {
     ]
 }
 
-fn folder_tag_tools() -> [TieredTool; 11] {
+fn folder_tag_tools() -> [OperationDefinition; 11] {
     [
         read_tool::<SecretScopePageInput, Page<Folder>>(
             FOLDERS_LIST_TOOL,
@@ -10878,7 +10878,7 @@ fn folder_tag_tools() -> [TieredTool; 11] {
     ]
 }
 
-fn identity_tools() -> [TieredTool; 5] {
+fn identity_tools() -> [OperationDefinition; 5] {
     [
         read_tool::<IdentityPageInput, Page<MachineIdentity>>(
             IDENTITIES_LIST_TOOL,
@@ -10908,7 +10908,7 @@ fn identity_tools() -> [TieredTool; 5] {
     ]
 }
 
-fn project_membership_tools() -> [TieredTool; 10] {
+fn project_membership_tools() -> [OperationDefinition; 10] {
     [
         read_tool::<ProjectMembershipPageInput, Page<ProjectUserMembership>>(
             PROJECT_USER_MEMBERSHIPS_LIST_TOOL,
@@ -10963,7 +10963,7 @@ fn project_membership_tools() -> [TieredTool; 10] {
     ]
 }
 
-fn universal_auth_tools() -> [TieredTool; 9] {
+fn universal_auth_tools() -> [OperationDefinition; 9] {
     [
         read_tool::<IdentityTargetInput, UniversalAuthConfig>(
             UNIVERSAL_AUTH_GET_TOOL,
@@ -11013,7 +11013,7 @@ fn universal_auth_tools() -> [TieredTool; 9] {
     ]
 }
 
-fn token_auth_tools() -> [TieredTool; 9] {
+fn token_auth_tools() -> [OperationDefinition; 9] {
     [
         read_tool::<IdentityTargetInput, TokenAuthConfig>(
             TOKEN_AUTH_GET_TOOL,
@@ -11063,7 +11063,7 @@ fn token_auth_tools() -> [TieredTool; 9] {
     ]
 }
 
-fn kubernetes_auth_tools() -> [TieredTool; 4] {
+fn kubernetes_auth_tools() -> [OperationDefinition; 4] {
     [
         read_tool::<IdentityTargetInput, KubernetesAuthConfig>(
             KUBERNETES_AUTH_GET_TOOL,
@@ -11088,7 +11088,7 @@ fn kubernetes_auth_tools() -> [TieredTool; 4] {
     ]
 }
 
-fn secret_tools() -> [TieredTool; 8] {
+fn secret_tools() -> [OperationDefinition; 8] {
     [
         read_tool::<SecretScopePageInput, Page<SecretMetadata>>(
             SECRET_METADATA_LIST_TOOL,
@@ -11133,7 +11133,7 @@ fn secret_tools() -> [TieredTool; 8] {
     ]
 }
 
-fn secret_import_tools() -> [TieredTool; 5] {
+fn secret_import_tools() -> [OperationDefinition; 5] {
     [
         read_tool::<SecretImportsListInput, Page<SecretImport>>(
             SECRET_IMPORTS_LIST_TOOL,
@@ -11201,6 +11201,7 @@ impl ToolTier {
 }
 
 /// A published tool together with the tier it was declared at.
+#[cfg(test)]
 pub(crate) struct TieredTool {
     pub(crate) tool: Tool,
     pub(crate) tier: ToolTier,
@@ -11381,39 +11382,75 @@ enum ResultDeliveryMode {
     Inline,
 }
 
-/// One operation's published identity and schemas.
-struct DescribedOperation {
-    name: String,
-    executor: &'static str,
-    tier: &'static str,
-    description: String,
-    input_schema: Value,
-    output_schema: Value,
+/// Static operation facts with independently lazy Rust-derived schemas.
+struct OperationDefinition {
+    name: &'static str,
+    description: &'static str,
+    tier: ToolTier,
+    open_world: bool,
+    input_constructor: fn() -> Map<String, Value>,
+    output_constructor: fn() -> Map<String, Value>,
+    input_schema: OnceLock<Arc<Map<String, Value>>>,
+    output_schema: OnceLock<Arc<Map<String, Value>>>,
 }
 
-/// Describe every operation this build serves, built once on first discovery.
-///
-/// The schemas come from the same tool definitions dispatch validates against,
-/// so what a caller is told to send is what the handler will accept.
-fn described_operations() -> &'static [DescribedOperation] {
-    static DESCRIBED: OnceLock<Vec<DescribedOperation>> = OnceLock::new();
+impl OperationDefinition {
+    fn input_schema(&self) -> &Arc<Map<String, Value>> {
+        self.input_schema
+            .get_or_init(|| Arc::new((self.input_constructor)()))
+    }
 
-    DESCRIBED.get_or_init(|| {
-        operation_catalog()
-            .into_iter()
-            .map(|tiered| DescribedOperation {
-                name: tiered.tool.name.to_string(),
-                executor: tiered.tier.executor(),
-                tier: tiered.tier.slug(),
-                description: tiered.tool.description.unwrap_or_default().to_string(),
-                input_schema: Value::Object((*tiered.tool.input_schema).clone()),
-                output_schema: tiered
-                    .tool
-                    .output_schema
-                    .map_or(Value::Null, |schema| Value::Object((*schema).clone())),
-            })
-            .collect()
-    })
+    fn output_schema(&self) -> &Arc<Map<String, Value>> {
+        self.output_schema
+            .get_or_init(|| Arc::new((self.output_constructor)()))
+    }
+
+    fn materialize(&self) -> Tool {
+        Tool::new(
+            Cow::Borrowed(self.name),
+            Cow::Borrowed(self.description),
+            Arc::clone(self.input_schema()),
+        )
+        .with_title(tool_title(self.name))
+        .with_raw_output_schema(Arc::clone(self.output_schema()))
+        .with_annotations(self.tier.annotations(self.name, self.open_world))
+    }
+}
+
+struct OperationRegistry {
+    operations: Vec<OperationDefinition>,
+    by_name: HashMap<&'static str, usize>,
+}
+
+impl OperationRegistry {
+    fn new() -> Self {
+        let operations = build_operation_catalog();
+        let mut by_name = HashMap::with_capacity(operations.len());
+        for (index, operation) in operations.iter().enumerate() {
+            assert!(by_name.insert(operation.name, index).is_none());
+        }
+        Self {
+            operations,
+            by_name,
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&OperationDefinition> {
+        self.by_name.get(name).map(|&index| &self.operations[index])
+    }
+}
+
+fn operation_registry() -> &'static OperationRegistry {
+    static REGISTRY: OnceLock<OperationRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(OperationRegistry::new)
+}
+
+fn described_operations() -> &'static [OperationDefinition] {
+    &operation_registry().operations
+}
+
+fn operation_definition(name: &str) -> Option<&'static OperationDefinition> {
+    operation_registry().get(name)
 }
 
 fn executor_tools() -> Vec<Tool> {
@@ -11561,28 +11598,28 @@ fn tiered_tool<Input, Output>(
     description: &'static str,
     tier: ToolTier,
     open_world: bool,
-) -> TieredTool
+) -> OperationDefinition
 where
     Input: JsonSchema,
     Output: JsonSchema,
 {
-    let tool = Tool::new(
-        Cow::Borrowed(name),
-        Cow::Borrowed(description),
-        Arc::new(schema_object::<Input>()),
-    )
-    .with_title(tool_title(name))
-    .with_raw_output_schema(Arc::new(schema_object::<Output>()))
-    .with_annotations(tier.annotations(name, open_world));
-
-    TieredTool { tool, tier }
+    OperationDefinition {
+        name,
+        description,
+        tier,
+        open_world,
+        input_constructor: schema_object::<Input>,
+        output_constructor: schema_object::<Output>,
+        input_schema: OnceLock::new(),
+        output_schema: OnceLock::new(),
+    }
 }
 
 fn mutation_tool<Input, Output>(
     name: &'static str,
     description: &'static str,
     destructive: bool,
-) -> TieredTool
+) -> OperationDefinition
 where
     Input: JsonSchema,
     Output: JsonSchema,
@@ -11595,7 +11632,10 @@ where
     tiered_tool::<Input, Output>(name, description, tier, true)
 }
 
-fn observable_read_tool<Input, Output>(name: &'static str, description: &'static str) -> TieredTool
+fn observable_read_tool<Input, Output>(
+    name: &'static str,
+    description: &'static str,
+) -> OperationDefinition
 where
     Input: JsonSchema,
     Output: JsonSchema,
@@ -11607,7 +11647,7 @@ fn read_tool<Input, Output>(
     name: &'static str,
     description: &'static str,
     open_world: bool,
-) -> TieredTool
+) -> OperationDefinition
 where
     Input: JsonSchema,
     Output: JsonSchema,
@@ -11962,6 +12002,14 @@ pub(crate) async fn dispatch_with_runtime(
     }
 
     let tool = params.name.clone();
+    // Only a registry-owned name may be retained for effect-aware guidance.
+    let operation = params
+        .arguments
+        .as_ref()
+        .and_then(|arguments| arguments.get("operation"))
+        .and_then(Value::as_str)
+        .and_then(operation_definition)
+        .map(|operation| operation.name);
     let result = if is_local_discovery(params.name.as_ref()) {
         dispatch_local(
             &mut params,
@@ -11971,7 +12019,11 @@ pub(crate) async fn dispatch_with_runtime(
     } else {
         dispatch_tool(client, files, params).await?
     };
-    Ok(enforce_result_budget(tool.as_ref(), files, result))
+    Ok(enforce_result_budget(
+        operation.unwrap_or(tool.as_ref()),
+        files,
+        result,
+    ))
 }
 
 fn is_published_tool(name: &str) -> bool {
@@ -12077,15 +12129,14 @@ async fn dispatch_executor(
     params.name = Cow::Owned(operation.clone());
     params.arguments = Some(request.arguments);
 
-    // Bound the result against the operation, not the executor that carried it,
-    // so a refusal names the request the caller made and the field that narrows
-    // it rather than the generic entry point.
+    // The published dispatch boundary sizes the final result once, after any
+    // requested file delivery has replaced the payload with its reference.
     let result = dispatch_tool(client, files, params).await?;
     let result = match result_slot {
         Some(slot) => deliver_result_as_file(&operation, slot, result)?,
         None => result,
     };
-    Ok(enforce_result_budget(&operation, files, result))
+    Ok(result)
 }
 
 /// The fixed wrapper an executor returns for `resultDelivery: "file"`.
@@ -12171,6 +12222,29 @@ pub(crate) async fn dispatch_tool(
 /// text compatibility form.
 pub(crate) const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 
+#[derive(Default)]
+struct ResultByteCounter(usize);
+
+impl std::io::Write for ResultByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("serialized result length overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn tool_result_bytes(result: &CallToolResult) -> Result<usize, serde_json::Error> {
+    let mut counter = ResultByteCounter::default();
+    serde_json::to_writer(&mut counter, result)?;
+    Ok(counter.0)
+}
+
 /// Replace an oversized result with an actionable tool error.
 ///
 /// Truncating instead would be worse than failing: a shortened secret,
@@ -12181,12 +12255,17 @@ pub(crate) const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 fn enforce_result_budget(
     tool: &str,
     files: Option<&SecretFilePlane>,
-    result: CallToolResult,
+    mut result: CallToolResult,
 ) -> CallToolResult {
-    let Ok(serialized) = serde_json::to_string(&result) else {
-        return result;
+    let Ok(serialized_bytes) = tool_result_bytes(&result) else {
+        if let Some(mut payload) = take_payload_wiping_text(&mut result) {
+            crate::files::zeroize_tree(&mut payload);
+        }
+        return CallToolResult::error(vec![ContentBlock::text(
+            "The completed result could not be serialized; reconcile the operation before retrying.",
+        )]);
     };
-    if serialized.len() <= MAX_TOOL_RESULT_BYTES {
+    if serialized_bytes <= MAX_TOOL_RESULT_BYTES {
         return result;
     }
 
@@ -12197,7 +12276,7 @@ fn enforce_result_budget(
     let advice = oversized_result_advice(tool);
     let mut message = format!(
         "{tool} produced a {}-byte result, over the {MAX_TOOL_RESULT_BYTES}-byte limit. {}",
-        serialized.len(),
+        serialized_bytes,
         advice.guidance()
     );
     // Offered only for calls the advice already classifies as safely repeatable:
@@ -12216,6 +12295,9 @@ fn enforce_result_budget(
              expires: ",
         );
         message.push_str(&Value::Array(references).to_string());
+    }
+    if let Some(mut payload) = take_payload_wiping_text(&mut result) {
+        crate::files::zeroize_tree(&mut payload);
     }
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
@@ -12281,36 +12363,26 @@ impl OversizedResultAdvice {
 /// Only a plain read may be told to retry. Every other tier has already left a
 /// mark upstream by the time the result is measured — an audited read records
 /// the access just as a write changes state — and this server never replays
-/// either, so advising a retry would invite the duplicate the exactly-once
+/// either, so advising a retry would invite the duplicate the no-replay
 /// contract exists to prevent.
 ///
 /// The tier comes from the declaration and the narrowing parameter from the
 /// published schema, so neither can drift from what the tools actually offer.
-/// The map is built once, and only when a result first exceeds the limit.
+/// Only the selected operation's input schema is needed.
 fn oversized_result_advice(tool: &str) -> OversizedResultAdvice {
-    static PAGINATED: OnceLock<HashSet<String>> = OnceLock::new();
-
     // An unpublished name cannot be shown to be safe to repeat.
-    let Some(ToolTier::Read) = tool_tier(tool) else {
+    let Some(operation) = operation_definition(tool) else {
         return OversizedResultAdvice::EffectAlreadyApplied;
     };
-
-    let paginated = PAGINATED.get_or_init(|| {
-        operation_catalog()
-            .iter()
-            .map(|tiered| &tiered.tool)
-            .filter(|candidate| {
-                candidate
-                    .input_schema
-                    .get("properties")
-                    .and_then(Value::as_object)
-                    .is_some_and(|properties| properties.contains_key("limit"))
-            })
-            .map(|candidate| candidate.name.to_string())
-            .collect()
-    });
-
-    if paginated.contains(tool) {
+    if operation.tier != ToolTier::Read {
+        return OversizedResultAdvice::EffectAlreadyApplied;
+    }
+    if operation
+        .input_schema()
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| properties.contains_key("limit"))
+    {
         OversizedResultAdvice::RequestFewerRecords
     } else {
         OversizedResultAdvice::NoNarrowingParameter
@@ -12353,7 +12425,7 @@ fn dispatch_operations_list(
         .filter(|operation| {
             input
                 .tier
-                .is_none_or(|filter| operation.tier == filter.tier().slug())
+                .is_none_or(|filter| operation.tier == filter.tier())
         })
         .filter(|operation| {
             input
@@ -12362,14 +12434,14 @@ fn dispatch_operations_list(
                 .is_none_or(|prefix| operation.name.starts_with(prefix))
         })
         .filter_map(|operation| {
-            crate::discovery::score(&terms, &operation.name, &operation.description)
+            crate::discovery::score(&terms, operation.name, operation.description)
                 .map(|score| (operation, score))
         })
         .collect();
     matching.sort_by(|(left, left_score), (right, right_score)| {
         right_score
             .cmp(left_score)
-            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.name.cmp(right.name))
     });
     let matched = matching.len();
     let operations: Vec<_> = matching
@@ -12377,13 +12449,13 @@ fn dispatch_operations_list(
         .skip(input.offset)
         .take(input.limit)
         .map(|(operation, _)| OperationSummary {
-            name: operation.name.clone(),
-            executor: operation.executor,
-            tier: operation.tier,
+            name: operation.name.to_owned(),
+            executor: operation.tier.executor(),
+            tier: operation.tier.slug(),
             description: if input.full_descriptions {
-                operation.description.clone()
+                operation.description.to_owned()
             } else {
-                crate::discovery::brief(&operation.description)
+                crate::discovery::brief(operation.description)
             },
         })
         .collect();
@@ -12411,28 +12483,25 @@ fn dispatch_operations_describe(
             None,
         ));
     }
-    let Some(operation) = described_operations()
-        .iter()
-        .find(|candidate| candidate.name == input.operation)
-    else {
+    let Some(operation) = operation_definition(&input.operation) else {
         return Err(unknown_operation());
     };
 
     structured(OperationsDescribeOutput {
-        name: operation.name.clone(),
-        executor: operation.executor,
-        tier: operation.tier,
-        description: operation.description.clone(),
+        name: operation.name.to_owned(),
+        executor: operation.tier.executor(),
+        tier: operation.tier.slug(),
+        description: operation.description.to_owned(),
         availability: OperationAvailability {
             implemented: true,
             enabled_here: files_enabled || operation.name != CERTIFICATES_IMPORT_TOOL,
             requires_file_transfer: operation.name == CERTIFICATES_IMPORT_TOOL,
             upstream_access: "notProbed",
         },
-        input_schema: operation.input_schema.clone(),
+        input_schema: Value::Object(operation.input_schema().as_ref().clone()),
         output_schema: input
             .include_output_schema
-            .then(|| operation.output_schema.clone()),
+            .then(|| Value::Object(operation.output_schema().as_ref().clone())),
     })
 }
 
