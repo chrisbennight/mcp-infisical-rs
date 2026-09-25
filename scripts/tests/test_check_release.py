@@ -12,6 +12,17 @@ SPEC.loader.exec_module(CHECK_RELEASE)
 
 
 class TestReleaseContract(unittest.TestCase):
+    def test_release_artifact_qualification_and_compiler_assertion_are_required(self) -> None:
+        dockerfile = CHECK_RELEASE.DOCKERFILE.read_text(encoding="utf-8")
+        broken = dockerfile.replace('test "$(rustc --version | cut -d \' \' -f 2)" = "$expected"', 'true')
+        self.assertNotEqual(broken, dockerfile)
+        self.assertIn("Dockerfile is missing verified effective compiler",
+                      CHECK_RELEASE.validate_dockerfile(broken))
+        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
+        marker = '          python3 scripts/qualify_image.py --image "$IMAGE@$IMAGE_DIGEST" --output .release'
+        self.assertIn(marker, workflow)
+        self.assertTrue(CHECK_RELEASE.validate_build_workflow(workflow.replace(marker, '          true')))
+
     def test_image_freshness_evidence_uses_the_scan_cache(self) -> None:
         for path, validate, directory in (
             (CHECK_RELEASE.GITHUB_TEST_WORKFLOW, CHECK_RELEASE.validate_github_test_workflow, ".security"),

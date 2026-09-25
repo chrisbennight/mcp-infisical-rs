@@ -45,6 +45,14 @@ ARG CRATES_INDEX_URL
 
 COPY . .
 
+# The digest-pinned image supplies the bootstrap compiler and system libraries.
+# rust-toolchain.toml deliberately selects the effective build compiler; record
+# it and fail if an environment override selects a different version.
+RUN expected="$(sed -n 's/^channel = "\([0-9.]*\)"$/\1/p' rust-toolchain.toml)" \
+    && test -n "$expected" \
+    && test "$(rustc --version | cut -d ' ' -f 2)" = "$expected" \
+    && rustc --version --verbose > /usr/local/share/mcp-rustc.txt
+
 # Source replacement rather than an additional registry: it redirects the
 # existing crates.io source instead of introducing a second one, so Cargo.lock
 # goes on naming crates-io and a lock produced here still resolves from the
@@ -68,6 +76,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
 COPY --from=builder /tmp/tzdata-root/ /
 COPY --from=builder /usr/local/bin/mcp-infisical-rs /mcp-infisical-rs
+COPY --from=builder /usr/local/share/mcp-rustc.txt /usr/share/mcp-rustc.txt
 
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/mcp-infisical-rs/
 USER nonroot:nonroot

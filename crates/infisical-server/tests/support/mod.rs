@@ -1,6 +1,11 @@
 use std::path::PathBuf;
 
 pub fn server_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os("INFISICAL_QUALIFICATION_BINARY") {
+        let binary = PathBuf::from(path);
+        assert!(binary.is_absolute() && binary.is_file());
+        return binary;
+    }
     // Cargo's path supports separate build directories. Without that compiler
     // variable, use its standard layout: test executables in profile/deps and
     // package binaries in the profile directory.

@@ -1,11 +1,57 @@
 # Releases
 
 The release workflow prepares a Linux/amd64 OCI image for
-`ghcr.io/chrisbennight/mcp-infisical-rs`. It does not publish native binaries,
-deploy a service, or update a rolling `latest` tag. Build from source for local
-stdio use. Other platforms have not been qualified.
+`ghcr.io/chrisbennight/mcp-infisical-rs` and a checksummed, attested Linux x86_64
+native archive in the release metadata artifact. It does not deploy a service
+or update a rolling `latest` tag. Other platforms have not been qualified.
+
+## Compiler and client qualification
+
+The digest-pinned Rust 1.96.1 builder supplies the bootstrap toolchain and Debian
+12 libraries. After copying the source, rustup deliberately installs the compiler
+selected by `rust-toolchain.toml` (currently 1.98.1). The build asserts that exact
+effective version and records `rustc --version --verbose` in the runtime image.
+The workspace's Rust 1.96 declaration is a minimum-version declaration, not a
+claim that this workflow tests that older compiler. Dependency changes still
+require validation with the selected compiler.
+
+CI and publication extract the exact executable from their built image and run
+the repository's isolated stdio and Streamable HTTP client fixtures against it.
+These exercise initialization, discovery, argument schemas, malformed calls,
+metadata reads, delivery capability reporting, and refusal of unavailable file
+delivery. They use local fakes, never a real Infisical service. The resulting
+record includes the immutable image ID, compiler, runner kernel and libc, and
+test exit status. No named desktop application is qualified by these fixtures.
+
+| Artifact or client | Qualification boundary |
+|---|---|
+| Linux/amd64 OCI image | Debian 12 runtime, hardened container smoke test, exact executable protocol tests |
+| Linux x86_64 native archive | Same dynamically linked executable, tested on the recorded Linux runner; requires compatible glibc and runtime libraries |
+| Repository stdio JSON-RPC and reqwest HTTP fixtures | MCP 2025-11-25, isolated initialization, discovery, schemas, reads, and delivery checks |
+| macOS, Windows, ARM64, named desktop clients | Not qualified or advertised as supported |
+
+Download the completed release's `release-metadata-*` Actions artifact to obtain
+the native archive, checksums, compiler record, and qualification evidence. Verify
+the checksums and GitHub attestation before extracting the archive:
+
+```sh
+gh attestation verify mcp-infisical-rs-linux-x86_64.tar.gz \
+  --repo chrisbennight/mcp-infisical-rs
+```
+
+Native archives share the metadata artifact's 90-day retention. Archive them
+with release notes for longer distribution. Source builds remain available.
 
 ## Before the first public release
+
+The [forge evidence snapshot](release-controls.json) records the observed
+settings on 25 September 2026: public repository, strict current-head `test` and
+`pr-review/gate` checks with administrator enforcement, protected version tags
+without bypass actors, enabled private vulnerability reporting, and publication
+opt-in. This dated observation is not continuous verification. Package visibility
+was not verified: the connected service lacks the user credential required by
+the Packages API. Check package visibility before announcing a release; the
+repository's public visibility does not prove the package is public.
 
 The maintainer must verify repository and version-tag protection, private
 vulnerability reporting, and the reviewed publication candidate. Main must
@@ -31,7 +77,8 @@ has been qualified merely by adding this workflow.
    licenses before obtaining the registry credential.
 4. It rebuilds the validated Dockerfile for Linux/amd64 under a unique candidate
    tag with build provenance. It scans that candidate by digest and produces a
-   runtime SBOM. After the image gate passes, it assigns version and full-commit
+   runtime SBOM. It then qualifies the exact executable and prepares the native
+   archive. After both gates pass, it assigns version and full-commit
    tags to that same digest without rebuilding, verifies both tags, and attaches
    a GitHub-signed image attestation. The registry digest identifies the immutable
    artifact; tags are convenient references, not an immutability guarantee.
@@ -43,8 +90,9 @@ The publication job has repository-read, package-write, OIDC, and attestation
 permissions. It uses GitHub's job token, with no external secret provider or
 deployment webhook. Actions are pinned to full commits. The Dockerfile retains
 locked Cargo builds and digest-pinned non-root runtime bases. The validation
-job smoke-tests a build of that recipe; the publication job rebuilds it and
-does not claim byte-for-byte reproducibility with the smoke image.
+job smoke-tests a build of that recipe; the publication job rebuilds it, tests
+that candidate's exact executable, and promotes the qualified digest. It does
+not claim byte-for-byte reproducibility with the earlier smoke image.
 
 ## Integrity and dependencies
 

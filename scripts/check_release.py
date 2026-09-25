@@ -142,6 +142,11 @@ def validate_dockerfile(text: str) -> list[str]:
         and 'CMD ["/mcp-infisical-rs", "--healthcheck"]' in instruction,
         "binary entrypoint": lambda instruction: instruction
         == 'ENTRYPOINT ["/mcp-infisical-rs"]',
+        "recorded effective compiler": lambda instruction: instruction
+        == "COPY --from=builder /usr/local/share/mcp-rustc.txt /usr/share/mcp-rustc.txt",
+        "verified effective compiler": lambda instruction: instruction.startswith("RUN ")
+        and '''test "$(rustc --version | cut -d ' ' -f 2)" = "$expected"''' in instruction
+        and "rustc --version --verbose > /usr/local/share/mcp-rustc.txt" in instruction,
     }
     for label, predicate in required.items():
         if not any(predicate(instruction) for instruction in instructions):
@@ -210,8 +215,15 @@ def validate_build_workflow(text: str) -> list[str]:
         'test "$published_digest" = "$IMAGE_DIGEST"',
     ))
     _require_step(errors, publish or "", "Retain release metadata", always=True)
+    _require_step(errors, publish or "", "Qualify exact release executable and prepare native archive", (
+        'python3 scripts/qualify_image.py --image "$IMAGE@$IMAGE_DIGEST" --output .release',
+    ))
+    native_attestation = _require_step(errors, publish or "", "Attest qualified native archive")
+    if not _has_yaml_line(native_attestation, "          subject-path: .release/mcp-infisical-rs-linux-x86_64.tar.gz"):
+        errors.append("native attestation must cover the qualified archive")
     required_order = ["Build release candidate", "Scan exact release candidate",
                       "Qualify release image and produce runtime SBOM",
+                      "Qualify exact release executable and prepare native archive",
                       "Promote qualified image without rebuilding", "Attest published image"]
     positions = [text.find(f"      - name: {name}\n") for name in required_order]
     if any(position < 0 for position in positions) or positions != sorted(positions):
@@ -313,6 +325,9 @@ def validate_github_test_workflow(text: str) -> list[str]:
         '--image-id "$image_id" --output .security/image-dispositions.json',
     ))
     _require_step(errors, test or "", "Retain security evidence", always=True)
+    qualification = _require_step(errors, test or "", "Qualify image executable")
+    if not _has_yaml_line(qualification, '        run: python3 scripts/qualify_image.py --sudo --image "$SMOKE_IMAGE" --output .security/qualification'):
+        errors.append("CI must qualify the built executable with isolated clients")
     return errors
 
 
