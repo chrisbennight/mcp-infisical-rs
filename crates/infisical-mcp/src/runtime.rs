@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::files::SecretFilePlane;
 
 /// Revision of the discovery schemas; clients must include it in cache keys.
-pub const SCHEMA_REVISION: &str = "2026-09-25.2";
+pub const SCHEMA_REVISION: &str = "2026-09-25.3";
 
 /// gateway: bearer plus identity JWT; standalone: bearer only.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]

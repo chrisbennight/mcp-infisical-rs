@@ -1824,6 +1824,9 @@ struct SqlCredentialCheckOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ProjectsListInput {
+    /// Include descriptions and embedded environments; affects MCP output only.
+    #[serde(default, rename = "includeDetails")]
+    include_details: bool,
     /// Zero-based collection offset.
     #[serde(default)]
     #[schemars(range(min = 0, max = 100_000))]
@@ -2668,6 +2671,55 @@ struct SecretScopePageInput {
     #[serde(default = "default_page_limit")]
     #[schemars(range(min = 1, max = 100))]
     limit: u16,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretMetadataListInput {
+    /// Exact project identifier.
+    #[schemars(regex(pattern = r"^[A-Za-z0-9_-]{1,128}$"))]
+    project_id: String,
+    /// Exact environment slug.
+    #[schemars(regex(pattern = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"), length(max = 64))]
+    environment: String,
+    /// Absolute secret-tree path; choose a specific folder to reduce upstream work.
+    #[schemars(regex(pattern = r"^/"), length(max = 2_048))]
+    path: String,
+    /// Include descendants; false limits upstream work to the selected folder.
+    #[serde(default)]
+    recursive: bool,
+    /// Local offset; each page refetches the mutable upstream collection.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = 100_000))]
+    offset: u32,
+    /// Maximum MCP records; does not reduce upstream bytes.
+    #[serde(default = "default_page_limit")]
+    #[schemars(range(min = 1, max = 100))]
+    limit: u16,
+    /// Filter upstream by up to sixteen unique lowercase hyphen-separated tag slugs, each at most 64 characters.
+    #[serde(default)]
+    #[schemars(length(max = 16))]
+    tag_slugs: Vec<String>,
+    /// Return operator metadata values, which may contain sensitive configuration.
+    #[serde(default)]
+    include_metadata: bool,
+    /// Return complete embedded tag details.
+    #[serde(default)]
+    include_tags: bool,
+}
+
+impl SecretMetadataListInput {
+    fn into_scope_page(self) -> Result<(SecretScope, PageRequest), McpError> {
+        SecretScopePageInput {
+            project_id: self.project_id,
+            environment: self.environment,
+            path: self.path,
+            recursive: self.recursive,
+            offset: self.offset,
+            limit: self.limit,
+        }
+        .into_parts()
+    }
 }
 
 impl SecretScopePageInput {
@@ -10755,7 +10807,7 @@ fn identity_project_additional_privilege_tools() -> [OperationDefinition; 6] {
 
 fn discovery_tools() -> [OperationDefinition; 2] {
     [
-        read_tool::<ProjectsListInput, Page<Project>>(
+        read_tool::<ProjectsListInput, Page<crate::projections::ProjectSummary>>(
             PROJECTS_LIST_TOOL,
             "List a bounded page of projects visible to the dedicated Infisical Machine Identity.",
             true,
@@ -11090,7 +11142,7 @@ fn kubernetes_auth_tools() -> [OperationDefinition; 4] {
 
 fn secret_tools() -> [OperationDefinition; 8] {
     [
-        read_tool::<SecretScopePageInput, Page<SecretMetadata>>(
+        read_tool::<SecretMetadataListInput, Page<crate::projections::SecretMetadataSummary>>(
             SECRET_METADATA_LIST_TOOL,
             "List bounded, value-free secret metadata under an exact scope; secret values, imports, references, and personal overrides stay disabled.",
             true,
@@ -11326,6 +11378,9 @@ const fn include_output_schema_by_default() -> bool {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationsDescribeOutput {
+    /// Collection paging cost; offset pages are independent reads, not a snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pagination: Option<crate::collection_cost::PaginationKind>,
     /// Operation the schemas belong to.
     name: String,
     /// Executor that accepts this operation.
@@ -12488,6 +12543,7 @@ fn dispatch_operations_describe(
     };
 
     structured(OperationsDescribeOutput {
+        pagination: crate::collection_cost::pagination(&input.operation),
         name: operation.name.to_owned(),
         executor: operation.tier.executor(),
         tier: operation.tier.slug(),
@@ -12680,6 +12736,36 @@ async fn dispatch_secret_import_workflow(
     }
 }
 
+async fn dispatch_secret_metadata_list(
+    client: &InfisicalClient,
+    params: &mut CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let input = parse_arguments::<SecretMetadataListInput>(
+        params,
+        "secrets.metadata.list arguments do not match the declared schema",
+    )?;
+    let (metadata, tags) = (input.include_metadata, input.include_tags);
+    if input.tag_slugs.len() > 16 {
+        return Err(McpError::invalid_params(
+            "tagSlugs must contain at most sixteen entries",
+            None,
+        ));
+    }
+    let tag_filter = input
+        .tag_slugs
+        .iter()
+        .map(|slug| TagSlug::new(slug.clone()).map_err(invalid_input))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (scope, page) = input.into_scope_page()?;
+    collection_result(
+        client
+            .list_secret_metadata_filtered(&scope, page, &tag_filter)
+            .await
+            .map(|page| crate::projections::secrets(page, metadata, tags)),
+        "Select a more specific path, set recursive to false, or use tagSlugs. A smaller limit or projection does not reduce the upstream response.",
+    )
+}
+
 async fn dispatch_upstream(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
@@ -12763,14 +12849,7 @@ async fn dispatch_upstream(
         return dispatch_identity_auth_workflow(client, files, params).await;
     }
     match params.name.as_ref() {
-        SECRET_METADATA_LIST_TOOL => {
-            let input = parse_arguments::<SecretScopePageInput>(
-                params,
-                "secrets.metadata.list arguments do not match the declared schema",
-            )?;
-            let (scope, page) = input.into_parts()?;
-            tool_result(client.list_secret_metadata(&scope, page).await)
-        }
+        SECRET_METADATA_LIST_TOOL => dispatch_secret_metadata_list(client, params).await,
         _ => dispatch_secret_workflow(client, files, params).await,
     }
 }
@@ -16289,7 +16368,10 @@ async fn dispatch_folder_workflow(
                 "folders.list arguments do not match the declared schema",
             )?;
             let (scope, page) = input.into_parts()?;
-            tool_result(client.list_folders(&scope, page).await)
+            collection_result(
+                client.list_folders(&scope, page).await,
+                "Select a more specific path and set recursive to false. A smaller limit does not reduce the upstream folder collection.",
+            )
         }
         FOLDERS_GET_TOOL => {
             let input = parse_arguments::<FolderGetInput>(
@@ -16409,8 +16491,15 @@ async fn dispatch_project_workflow(
                 params,
                 "projects.list arguments do not match the declared schema",
             )?;
+            let details = input.include_details;
             let page = input.into_request()?;
-            tool_result(client.list_projects(page).await)
+            collection_result(
+                client
+                    .list_projects(page)
+                    .await
+                    .map(|page| crate::projections::projects(page, details)),
+                "Use projects.get with a known projectId. A smaller limit or projection does not reduce the upstream project inventory.",
+            )
         }
         PROJECTS_GET_TOOL => {
             let input = parse_arguments::<ProjectGetInput>(
@@ -17215,6 +17304,23 @@ where
 
 fn invalid_input(error: impl Display) -> McpError {
     McpError::invalid_params(error.to_string(), None)
+}
+
+fn collection_result<T: Serialize>(
+    result: Result<T, infisical_api::ResourceError>,
+    bound_guidance: &'static str,
+) -> Result<CallToolResult, McpError> {
+    if matches!(
+        result,
+        Err(infisical_api::ResourceError::Client(
+            infisical_api::ClientError::ResponseTooLarge { .. }
+        ))
+    ) {
+        return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+            "The upstream collection exceeded the response-size bound. {bound_guidance}"
+        ))]));
+    }
+    tool_result(result)
 }
 
 fn tool_result<T, E>(result: Result<T, E>) -> Result<CallToolResult, McpError>
@@ -28462,7 +28568,7 @@ mod tests {
             None,
             request(
                 "infisical.read",
-                &json!({ "operation": "projects.list", "arguments": { "limit": 100 } }),
+                &json!({ "operation": "projects.list", "arguments": { "limit": 100, "includeDetails": true } }),
             ),
         )
         .await

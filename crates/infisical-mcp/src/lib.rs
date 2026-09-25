@@ -16,8 +16,10 @@ use serde::Deserialize;
 
 use crate::files::SecretFilePlane;
 
+mod collection_cost;
 mod discovery;
 pub mod files;
+mod projections;
 pub mod runtime;
 mod tools;
 
@@ -1859,7 +1861,7 @@ mod tests {
         let expected: [ToolSchemaFields<'_>; 2] = [
             (
                 "projects.list",
-                &["limit", "offset"][..],
+                &["includeDetails", "limit", "offset"][..],
                 &["items", "next", "total"][..],
             ),
             ("projects.get", &["projectId"][..], &["project"][..]),
@@ -2006,11 +2008,14 @@ mod tests {
                 "secrets.metadata.list",
                 &[
                     "environment",
+                    "includeMetadata",
+                    "includeTags",
                     "limit",
                     "offset",
                     "path",
                     "projectId",
                     "recursive",
+                    "tagSlugs",
                 ][..],
                 &["items", "next", "total"][..],
             ),
@@ -4691,7 +4696,7 @@ mod tests {
             .unwrap();
         assert_definition_properties(
             projects,
-            "Project",
+            "ProjectSummary",
             &[
                 "description",
                 "environments",
@@ -4759,7 +4764,7 @@ mod tests {
             .unwrap();
         assert_definition_properties(
             secrets,
-            "SecretMetadata",
+            "SecretMetadataSummary",
             &[
                 "environment",
                 "id",

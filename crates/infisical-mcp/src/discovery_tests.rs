@@ -177,3 +177,19 @@ fn input_only_schema_and_brief_pages_reduce_serialized_results() {
         assert_eq!(compatibility, serialized["structuredContent"]);
     }
 }
+
+#[test]
+fn upstream_collection_bounds_do_not_suggest_a_smaller_local_page() {
+    let result = collection_result::<Value>(
+        Err(infisical_api::ResourceError::Client(
+            infisical_api::ClientError::ResponseTooLarge { limit: 128 },
+        )),
+        "Select an exact path with recursive false; local paging does not reduce this fetch.",
+    )
+    .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(serialized.contains("upstream collection"));
+    assert!(serialized.contains("exact path"));
+    assert!(!serialized.contains("smaller limit"));
+}

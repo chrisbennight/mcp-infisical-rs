@@ -835,6 +835,140 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collection_projections_preserve_identity_and_refetch_each_local_page() {
+        let (router, key, upstream) = test_router().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/universal-auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "collection-fixture-token", "expiresIn": 60,
+                "accessTokenMaxTTL": 120, "tokenType": "Bearer"
+            })))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects"))
+            .respond_with(move |_: &wiremock::Request| {
+                let generation = observed.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"projects":
+                    (generation..generation + 2).map(|index| json!({
+                        "id": format!("project-{index}"), "name": "Project", "slug": format!("project-{index}"),
+                        "type": "secret-manager", "orgId": "org-1",
+                        "description": "projection-detail-canary".repeat(20),
+                        "environments": [{"id": "env-1", "name": "Production", "slug": "prod"}]
+                    })).collect::<Vec<_>>()
+                }))
+            })
+            .expect(3)
+            .mount(&upstream).await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        let first = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            2,
+            "infisical.read",
+            json!({"operation": "projects.list", "arguments": {"limit": 1}}),
+        )
+        .await;
+        let page = &first["result"]["structuredContent"];
+        assert_eq!(page["items"][0]["id"], "project-0");
+        assert_eq!(page["next"]["offset"], 1);
+        assert_eq!(page["total"], 2);
+        assert!(!first.to_string().contains("projection-detail-canary"));
+        assert!(page["items"][0].get("environments").is_none());
+        let second = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            3,
+            "infisical.read",
+            json!({"operation": "projects.list", "arguments": {"limit": 1, "offset": 1}}),
+        )
+        .await;
+        // The upstream collection changed: continuation coordinates do not pin a snapshot.
+        assert_eq!(
+            second["result"]["structuredContent"]["items"][0]["id"],
+            "project-2"
+        );
+        assert!(second["result"]["structuredContent"]["next"].is_null());
+        let details = call_authenticated_tool(router.clone(), &identity, 4, "infisical.read",
+            json!({"operation": "projects.list", "arguments": {"limit": 1, "includeDetails": true}})).await;
+        assert!(details.to_string().contains("projection-detail-canary"));
+        assert!(details.to_string().len() > first.to_string().len());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let description = call_authenticated_tool(
+            router,
+            &identity,
+            5,
+            "operations.describe",
+            json!({"operation": "projects.list", "includeOutputSchema": false}),
+        )
+        .await;
+        assert_eq!(
+            description["result"]["structuredContent"]["pagination"],
+            "localSlice"
+        );
+    }
+
+    #[tokio::test]
+    async fn secret_metadata_details_are_explicit_and_scope_flags_remain_upstream() {
+        let (router, key, upstream) = test_router().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/universal-auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "projection-fixture-token", "expiresIn": 60,
+                "accessTokenMaxTTL": 120, "tokenType": "Bearer"
+            })))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v4/secrets"))
+            .and(query_param("secretPath", "/payments"))
+            .and(query_param("tagSlugs", "team"))
+            .and(query_param("recursive", "false"))
+            .and(query_param("viewSecretValue", "false"))
+            .and(query_param("expandSecretReferences", "false"))
+            .and(query_param("includeImports", "false"))
+            .and(query_param("includePersonalOverrides", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"secrets": [{
+                "id": "secret-1", "secretKey": "APP_KEY", "secretValue": "hidden-value-canary",
+                "environment": "prod", "version": 1, "type": "shared", "secretPath": "/payments",
+                "secretValueHidden": true,
+                "secretMetadata": [{"key": "owner", "value": "metadata-opt-in-canary", "isEncrypted": false}],
+                "tags": [{"id": "tag-1", "name": "Tag detail canary", "slug": "team"}]
+            }]})))
+            .expect(2).mount(&upstream).await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        for include in [false, true] {
+            let response = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                2,
+                "infisical.read",
+                json!({"operation": "secrets.metadata.list", "arguments": {
+                    "projectId": "project-1", "environment": "prod", "path": "/payments",
+                    "includeMetadata": include, "includeTags": include, "tagSlugs": ["team"]
+                }}),
+            )
+            .await;
+            let item = &response["result"]["structuredContent"]["items"][0];
+            assert_eq!(item["id"], "secret-1");
+            assert_eq!(item["name"], "APP_KEY");
+            assert_eq!(item["secretPath"], "/payments");
+            assert_eq!(
+                response.to_string().contains("metadata-opt-in-canary"),
+                include
+            );
+            assert_eq!(response.to_string().contains("Tag detail canary"), include);
+            assert!(!response.to_string().contains("hidden-value-canary"));
+        }
+    }
+
+    #[tokio::test]
     async fn bounded_discovery_and_input_only_schemas_work_on_the_wire() {
         let (router, key, upstream) = test_router().await;
         let now = unix_timestamp();
@@ -1047,7 +1181,7 @@ mod tests {
             &identity,
             2,
             "infisical.read",
-            json!({"operation": "projects.list", "arguments": {"limit": 100}}),
+            json!({"operation": "projects.list", "arguments": {"limit": 100, "includeDetails": true}}),
         )
         .await;
         assert_eq!(response["result"]["isError"], true);

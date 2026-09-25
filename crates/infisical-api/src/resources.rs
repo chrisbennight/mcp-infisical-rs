@@ -900,6 +900,10 @@ pub enum ResourceError {
         "Infisical returned a different secret scope; verify the requested shared-secret coordinates and upstream service"
     )]
     InvalidSecretResponse,
+    #[error("tagSlugs must contain at most sixteen distinct validated tag slugs")]
+    InvalidSecretTagFilter,
+    #[error("Infisical returned a secret outside the requested tag filter")]
+    InvalidSecretTagResponse,
     #[error("secret deletion requires explicit confirmation")]
     DeletionNotConfirmed,
     #[error("secret batches must contain between 1 and 50 entries")]
