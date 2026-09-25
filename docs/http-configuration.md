@@ -8,6 +8,11 @@ In the gateway profile, all `/mcp` requests require both `Authorization: Bearer 
 JWT must use EdDSA with a known `kid`, the configured issuer, audience
 `infisical` (fixed by the server), and valid temporal claims. A fresh unknown
 `kid` triggers a single-flight JWKS refresh limited to once every five seconds.
+Failed fetches apply the same five-second cooldown even with an empty or expired
+key cache. A cancelled fetch retains a retry window bounded by the JWKS request
+timeout plus five seconds. A still-fresh cached key remains usable; expired keys
+are never accepted as a fallback. Requests refused during a refresh cooldown
+stay unauthorized and carry a bounded `Retry-After` header.
 JWKS redirects and ambient proxies are disabled. Remote cleartext URLs are
 rejected unless `INFISICAL_MCP_IDENTITY_ALLOW_PRIVATE_HTTP=true` explicitly
 enables the same DNS-pinned private-authority policy used by the Infisical API
@@ -35,6 +40,14 @@ pre-expiry deadline, and refreshed through one shared single-flight path. An
 authentication failure retries a declared idempotent read once; observable
 reads and mutations invalidate the rejected token for the next call but are
 never replayed.
+
+Failed logins pause new login attempts for five seconds; rejected credentials
+pause them for thirty seconds. Upstream `Retry-After` guidance can extend the
+pause up to five minutes. Callers receive a safe remaining-wait hint and the
+original failure category, and the next eligible request can recover without
+restarting the process. Both numeric and HTTP-date retry headers are supported,
+with malformed or duplicate headers ignored. A retry hint controls pacing; it
+does not make an observable read or mutation safe to replay.
 
 Serving mode requires `INFISICAL_API_URL`,
 `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`, and

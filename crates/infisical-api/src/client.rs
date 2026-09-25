@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use reqwest::{Method, RequestBuilder, StatusCode, dns::Resolve, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -20,6 +23,9 @@ const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TOKEN_REFRESH_SKEW: Duration = Duration::from_secs(30);
+const AUTH_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
+const AUTH_REJECTION_COOLDOWN: Duration = Duration::from_secs(30);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 /// Complete configuration for the typed Infisical REST client.
 #[derive(Debug)]
@@ -69,6 +75,7 @@ type RefreshOutcome = Result<Arc<CachedToken>, ClientError>;
 
 struct RefreshCoordinator {
     in_flight: Option<watch::Receiver<Option<RefreshOutcome>>>,
+    failure: Option<(Instant, ClientError)>,
 }
 
 struct CachedToken {
@@ -265,7 +272,10 @@ impl InfisicalClient {
                 settings,
                 http,
                 token: tokio::sync::RwLock::new(None),
-                refresh: Mutex::new(RefreshCoordinator { in_flight: None }),
+                refresh: Mutex::new(RefreshCoordinator {
+                    in_flight: None,
+                    failure: None,
+                }),
             }),
         })
     }
@@ -444,6 +454,17 @@ impl InfisicalClient {
         if let Some(token) = self.fresh_token().await {
             return Ok(token);
         }
+        if let Some((retry_at, failure)) = &coordinator.failure {
+            let remaining = retry_at.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                return Err(ClientError::AuthenticationCooldown {
+                    failure: Box::new(failure.clone()),
+                    retry_after_seconds: remaining.as_secs()
+                        + u64::from(remaining.subsec_nanos() != 0),
+                });
+            }
+        }
+        coordinator.failure = None;
 
         let mut receiver = if let Some(receiver) = coordinator.in_flight.as_ref() {
             receiver.clone()
@@ -459,8 +480,10 @@ impl InfisicalClient {
                 if let Ok(token) = &outcome {
                     *client.inner.token.write().await = Some(Arc::clone(token));
                 }
-                sender.send_replace(Some(outcome));
-                client.clear_refresh(&flight_identity).await;
+                let failure = client
+                    .finish_refresh(&flight_identity, outcome.as_ref().err())
+                    .await;
+                sender.send_replace(Some(failure.map_or(outcome, Err)));
             });
             receiver
         };
@@ -473,8 +496,10 @@ impl InfisicalClient {
         if let Ok(Some(outcome)) = outcome {
             outcome
         } else {
-            self.clear_refresh(&receiver).await;
-            Err(ClientError::RefreshInterrupted)
+            Err(self
+                .finish_refresh(&receiver, Some(&ClientError::RefreshInterrupted))
+                .await
+                .unwrap_or(ClientError::RefreshInterrupted))
         }
     }
 
@@ -489,15 +514,38 @@ impl InfisicalClient {
             .map(Arc::clone)
     }
 
-    async fn clear_refresh(&self, completed: &watch::Receiver<Option<RefreshOutcome>>) {
+    async fn finish_refresh(
+        &self,
+        completed: &watch::Receiver<Option<RefreshOutcome>>,
+        failure: Option<&ClientError>,
+    ) -> Option<ClientError> {
         let mut coordinator = self.inner.refresh.lock().await;
         if coordinator
             .in_flight
             .as_ref()
             .is_some_and(|current| current.same_channel(completed))
         {
+            coordinator.failure = failure.map(|failure| {
+                let minimum = if matches!(failure, ClientError::Api(error)
+                    if matches!(error.kind(), ApiErrorKind::Authentication | ApiErrorKind::PermissionDenied)) {
+                    AUTH_REJECTION_COOLDOWN
+                } else {
+                    AUTH_FAILURE_COOLDOWN
+                };
+                let cooldown = minimum.max(failure.retry_after().unwrap_or_default()).min(MAX_RETRY_AFTER);
+                (Instant::now() + cooldown, failure.clone())
+            });
             coordinator.in_flight = None;
+            return coordinator.failure.as_ref().map(|(retry_at, failure)| {
+                let remaining = retry_at.saturating_duration_since(Instant::now());
+                ClientError::AuthenticationCooldown {
+                    failure: Box::new(failure.clone()),
+                    retry_after_seconds: remaining.as_secs()
+                        + u64::from(remaining.subsec_nanos() != 0),
+                }
+            });
         }
+        None
     }
 
     async fn invalidate_if_current(&self, used: &Arc<CachedToken>) {
@@ -587,6 +635,7 @@ impl InfisicalClient {
                 kind: ApiErrorKind::from_status(status),
                 status: status.as_u16(),
                 request_id: safe_request_id(response.headers()),
+                retry_after_seconds: safe_retry_after(response.headers(), SystemTime::now()),
             }));
         }
         let mut body = Zeroizing::new(Vec::new());
@@ -770,8 +819,49 @@ pub enum ClientError {
     InvalidEndpoint,
     #[error("Infisical authentication refresh was interrupted")]
     RefreshInterrupted,
+    #[error(
+        "Infisical authentication is cooling down; retry after {retry_after_seconds} seconds: {failure}"
+    )]
+    AuthenticationCooldown {
+        #[source]
+        failure: Box<ClientError>,
+        retry_after_seconds: u64,
+    },
     #[error(transparent)]
     Api(ApiFailure),
+}
+
+impl ClientError {
+    /// Bounded pacing guidance, not authorization to replay an operation.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Api(failure) => failure.retry_after(),
+            Self::AuthenticationCooldown {
+                retry_after_seconds,
+                ..
+            } => Some(Duration::from_secs(*retry_after_seconds)),
+            _ => None,
+        }
+    }
+}
+
+fn safe_retry_after(headers: &header::HeaderMap, now: SystemTime) -> Option<u64> {
+    let mut values = headers.get_all(header::RETRY_AFTER).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() || value.is_empty() || value.len() > 128 {
+        return None;
+    }
+    let delay = if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        Duration::from_secs(value.parse::<u64>().ok()?)
+    } else {
+        httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(now)
+            .unwrap_or_default()
+    };
+    let bounded = delay.min(MAX_RETRY_AFTER);
+    Some(bounded.as_secs() + u64::from(bounded.subsec_nanos() != 0))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -796,6 +886,7 @@ pub struct ApiFailure {
     kind: ApiErrorKind,
     status: u16,
     request_id: Option<String>,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiFailure {
@@ -813,6 +904,12 @@ impl ApiFailure {
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
     }
+
+    /// Upstream pacing guidance capped at the client's supported maximum.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.retry_after_seconds.map(Duration::from_secs)
+    }
 }
 
 impl std::fmt::Display for ApiFailure {
@@ -824,6 +921,12 @@ impl std::fmt::Display for ApiFailure {
         )?;
         if let Some(request_id) = self.request_id() {
             write!(formatter, "; request ID {request_id}")?;
+        }
+        if let Some(seconds) = self.retry_after_seconds {
+            write!(
+                formatter,
+                "; Retry-After {seconds} seconds is pacing guidance, not permission to replay a mutation"
+            )?;
         }
         Ok(())
     }
@@ -1069,7 +1172,7 @@ mod tests {
             .and(path(LOGIN_PATH))
             .respond_with(move |_: &wiremock::Request| {
                 responder_count.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(500).set_delay(Duration::from_millis(200))
+                ResponseTemplate::new(503).set_delay(Duration::from_millis(200))
             })
             .mount(&server)
             .await;
@@ -1081,12 +1184,140 @@ mod tests {
             requests.spawn(async move { client.execute_read::<TestRead>(&[]).await });
         }
         while let Some(result) = requests.join_next().await {
+            let error = result.unwrap().unwrap_err();
+            assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
             assert!(matches!(
-                result.unwrap().unwrap_err(),
-                ClientError::Api(ref failure) if failure.kind() == ApiErrorKind::Server
+                error,
+                ClientError::AuthenticationCooldown { failure, .. }
+                    if matches!(*failure, ClientError::Api(ref original)
+                        if original.kind() == ApiErrorKind::Server)
             ));
         }
         assert_eq!(login_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_login_cooldown_bounds_caller_waves_and_recovers_without_restart() {
+        let server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+        Mock::given(method("POST"))
+            .and(path(LOGIN_PATH))
+            .respond_with(move |_: &wiremock::Request| {
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(503)
+                        .insert_header("Retry-After", "7")
+                        .set_body_string("authentication-response-canary")
+                } else {
+                    login_response("recovered-token", 60)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/test/read"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value":"recovered"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = InfisicalClient::new(settings(&server)).unwrap();
+        let first = client.execute_read::<TestRead>(&[]).await.unwrap_err();
+        assert_eq!(first.retry_after(), Some(Duration::from_secs(7)));
+        assert!(!format!("{first} {first:?}").contains("authentication-response-canary"));
+        for _ in 0..3 {
+            let mut callers = JoinSet::new();
+            for _ in 0..16 {
+                let client = client.clone();
+                callers.spawn(async move { client.execute_read::<TestRead>(&[]).await });
+            }
+            while let Some(result) = callers.join_next().await {
+                let error = result.unwrap().unwrap_err();
+                assert!(matches!(error, ClientError::AuthenticationCooldown { .. }));
+                assert!(error.retry_after().unwrap() <= Duration::from_secs(7));
+            }
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let error = client
+            .execute_mutation::<TestMutationOperation>(&TestMutation {
+                value: "not-sent".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ClientError::AuthenticationCooldown { .. }));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        // Move the private deadline to the present to exercise recovery without a wall-clock sleep.
+        client
+            .inner
+            .refresh
+            .lock()
+            .await
+            .failure
+            .as_mut()
+            .unwrap()
+            .0 = Instant::now();
+        assert_eq!(
+            client.execute_read::<TestRead>(&[]).await.unwrap().value,
+            "recovered"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(client.inner.refresh.lock().await.failure.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_login_credentials_have_a_longer_bounded_cooldown() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(LOGIN_PATH))
+                .respond_with(ResponseTemplate::new(status).insert_header("Retry-After", "1"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = InfisicalClient::new(settings(&server)).unwrap();
+            let first = client.access_token().await.err().unwrap();
+            assert_eq!(first.retry_after(), Some(super::AUTH_REJECTION_COOLDOWN));
+            assert!(matches!(first, ClientError::AuthenticationCooldown { .. }));
+            let error = client.access_token().await.err().unwrap();
+            let remaining = error.retry_after().unwrap();
+            assert!(remaining > super::AUTH_FAILURE_COOLDOWN);
+            assert!(remaining <= super::AUTH_REJECTION_COOLDOWN);
+            assert!(
+                matches!(error, ClientError::AuthenticationCooldown { failure, .. }
+                if matches!(*failure, ClientError::Api(ref original)
+                    if matches!(original.kind(), ApiErrorKind::Authentication | ApiErrorKind::PermissionDenied)))
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_is_bounded_and_accepts_seconds_or_http_dates_without_reflection() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for (value, expected) in [
+            ("0".to_owned(), Some(0)),
+            ("17".to_owned(), Some(17)),
+            (u64::MAX.to_string(), Some(300)),
+            (
+                httpdate::fmt_http_date(now + Duration::from_secs(60)),
+                Some(60),
+            ),
+            (
+                httpdate::fmt_http_date(now - Duration::from_secs(60)),
+                Some(0),
+            ),
+            ("-1".into(), None),
+            ("1.5".into(), None),
+            ("retry-header-secret-canary".into(), None),
+            ("9".repeat(129), None),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert("Retry-After", value.parse().unwrap());
+            assert_eq!(super::safe_retry_after(&headers, now), expected);
+        }
+        let mut headers = HeaderMap::new();
+        headers.append("Retry-After", "5".parse().unwrap());
+        headers.append("Retry-After", "10".parse().unwrap());
+        assert_eq!(super::safe_retry_after(&headers, now), None);
     }
 
     #[tokio::test]
@@ -1282,9 +1513,11 @@ mod tests {
                 .await;
             let client = InfisicalClient::new(settings(&server)).unwrap();
 
-            assert_eq!(
-                client.execute_read::<TestRead>(&[]).await.unwrap_err(),
-                ClientError::InvalidResponse
+            let error = client.execute_read::<TestRead>(&[]).await.unwrap_err();
+            assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
+            assert!(
+                matches!(error, ClientError::AuthenticationCooldown { failure, .. }
+                if *failure == ClientError::InvalidResponse)
             );
         }
     }
@@ -1668,6 +1901,7 @@ mod tests {
             kind: ApiErrorKind::Conflict,
             status: 409,
             request_id: Some("request-123".into()),
+            retry_after_seconds: None,
         };
         assert_eq!(
             failure.to_string(),
@@ -1825,10 +2059,12 @@ mod tests {
         client_settings.allow_private_http = true;
         let client = InfisicalClient::new_with_system_resolver(client_settings, resolver).unwrap();
 
-        assert!(matches!(
-            client.execute_read::<TestRead>(&[]).await,
-            Err(ClientError::Transport(_))
-        ));
+        let error = client.execute_read::<TestRead>(&[]).await.unwrap_err();
+        assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
+        assert!(
+            matches!(error, ClientError::AuthenticationCooldown { failure, .. }
+            if matches!(*failure, ClientError::Transport(_)))
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
             server.received_requests().await.unwrap().is_empty(),

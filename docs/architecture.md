@@ -88,7 +88,12 @@ loopback HTTP supports isolated tests, and an explicit private-HTTP opt-in
 permits only DNS-pinned container service names or private IP literals while
 still rejecting the IPv6 instance-metadata endpoint. A fresh unknown key
 identifier triggers one single-flight refresh, globally limited to once every
-five seconds. Verified claims are attached to the HTTP request extensions;
+five seconds. Failed JWKS fetches also impose a five-second cooldown for empty
+and expired caches. A cancelled fetch retains a bounded retry window through
+the request timeout plus that cooldown. Still-fresh cached keys remain usable;
+expired keys never become an availability fallback. Requests that require a
+refresh during its cooldown remain unauthorized and receive a bounded
+`Retry-After` hint. Verified claims are attached to the HTTP request extensions;
 the server does not currently emit them as a per-user operation audit trail or
 use them to invent local authorization rules.
 
@@ -99,13 +104,20 @@ concurrency bound, and a 30-second default deadline. These limits do not wrap
 dead.
 
 The upstream access token is cached until a conservative pre-expiry deadline.
-Concurrent callers share one refresh. A failed authenticated idempotent read
+Concurrent callers share one refresh. A failed login imposes a five-second
+cooldown, or thirty seconds for rejected credentials. A valid upstream
+`Retry-After` can extend that interval, capped at five minutes. Completion
+publishes the failed-refresh state before releasing subsequent callers, and
+recovery requires no restart. A failed authenticated idempotent read
 may refresh and retry once. An observable read or mutation invalidates the
 rejected token for the next call but is never replayed automatically because
 the first attempt may already have produced a side effect. The typed client
 disables redirects and ambient proxies, bounds request time and response bytes,
-discards untrusted error bodies, and exposes only a validated request ID with a
-fixed error category. Resource modules use sealed operation declarations, so
+discards untrusted error bodies, and exposes a validated request ID, a fixed
+error category, and bounded retry pacing. Numeric and HTTP-date `Retry-After`
+values are accepted; malformed or repeated headers are ignored. Pacing does
+not authorize replaying an operation whose effect is uncertain.
+Resource modules use sealed operation declarations, so
 callers cannot supply an arbitrary method or path.
 
 The pinned `v0.160.12` core routes span API versions: current project and
