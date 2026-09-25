@@ -6166,6 +6166,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mismatched_project_metadata_is_rejected_over_the_mcp_transport() {
+        let (router, key, upstream_server) = test_router().await;
+        mount_app_automation_wire_login(&upstream_server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects/project-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "project": {
+                    "id": "project-2", "name": "unexpected-project-canary",
+                    "slug": "other", "type": "secret-manager", "orgId": "org-1",
+                    "environments": [{"id": "env-1", "name": "Unexpected", "slug": "prod"}]
+                }
+            })))
+            .expect(2)
+            .mount(&upstream_server)
+            .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        for operation in ["projects.get", "environments.list"] {
+            let result = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                2,
+                operation,
+                json!({"projectId": "project-1"}),
+            )
+            .await;
+            assert_eq!(result["result"]["isError"], true, "{operation}: {result}");
+            assert!(result["result"].get("structuredContent").is_none());
+            assert!(!result.to_string().contains("unexpected-project-canary"));
+            assert!(!result.to_string().contains("env-1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn mismatched_secret_scope_is_rejected_for_inline_and_file_delivery() {
+        let (router, key, upstream_server) = test_router_with_files().await;
+        mount_app_automation_wire_login(&upstream_server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v4/secrets/STRIPE_API_KEY"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "secret": {
+                    "id": "secret-1", "environment": "staging", "version": 3,
+                    "type": "shared", "secretKey": "STRIPE_API_KEY",
+                    "secretValue": "wrong-scope-wire-canary", "secretPath": "/payments"
+                }
+            })))
+            .expect(2)
+            .mount(&upstream_server)
+            .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        for delivery in ["inlineValue", "reference"] {
+            let result = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                2,
+                "secrets.reveal",
+                json!({
+                    "target": {
+                        "projectId": "project-1", "environment": "prod",
+                        "path": "/payments", "name": "STRIPE_API_KEY"
+                    },
+                    "delivery": delivery
+                }),
+            )
+            .await;
+            assert_eq!(result["result"]["isError"], true, "{delivery}: {result}");
+            assert!(result["result"].get("structuredContent").is_none());
+            assert!(!result.to_string().contains("wrong-scope-wire-canary"));
+            assert!(!result.to_string().contains("mcp-file://"));
+        }
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn the_reveal_transfer_plane_serves_a_staged_secret_end_to_end() {
         let (router, key, upstream_server) = test_router_with_files().await;
