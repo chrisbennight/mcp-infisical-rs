@@ -11,6 +11,8 @@ a client over stdio or HTTP, and make a first project metadata call.
 | Task | Guide |
 | --- | --- |
 | Configure a client and troubleshoot its connection | [Standalone connections](standalone.md) |
+| Choose a task, authority, and delivery method | [Task guides](tasks.md) |
+| Check generated operation and capability totals | [Catalog summary](generated-catalog.md) |
 | Find an operation and understand its inputs | [Operation reference](tool-surface.md) |
 | Check implemented and unavailable API families | [API coverage](api-coverage.md) |
 | Configure HTTP authentication, limits, and file transfer | [HTTP configuration](http-configuration.md) |

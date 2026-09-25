@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Project to environment inventory",
+    "source": "projects.list",
+    "outputPath": ["items", "[]", "id"],
+    "consumer": "environments.list",
+    "inputPath": ["projectId"],
+    "scope": "Keep the selected project's identifier."
+  },
+  {
+    "name": "Environment to secret metadata",
+    "source": "environments.list",
+    "outputPath": ["environments", "items", "[]", "slug"],
+    "consumer": "secrets.metadata.list",
+    "inputPath": ["environment"],
+    "scope": "When environments is present, keep the same project and select an exact folder path."
+  },
+  {
+    "name": "Secret metadata to exact reveal",
+    "source": "secrets.metadata.list",
+    "outputPath": ["items", "[]", "name"],
+    "consumer": "secrets.reveal",
+    "inputPath": ["target", "name"],
+    "scope": "Keep the same project, environment, and normalized folder path."
+  },
+  {
+    "name": "KMS inventory to exact key",
+    "source": "kms.keys.list",
+    "outputPath": ["items", "[]", "id"],
+    "consumer": "kms.keys.get",
+    "inputPath": ["keyId"],
+    "scope": "Keep the same owning project."
+  },
+  {
+    "name": "Certificate inventory to exact certificate",
+    "source": "certificates.list",
+    "outputPath": ["items", "[]", "id"],
+    "consumer": "certificates.get",
+    "inputPath": ["certificateId"],
+    "scope": "Keep the same Certificate Manager project."
+  }
+]

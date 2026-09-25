@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import re
 import sys
+import subprocess
+
+import catalog_summary
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -57,6 +60,10 @@ def validate(path: Path) -> list[str]:
 def main() -> int:
     files = markdown_files()
     errors = [error for path in files for error in validate(path)]
+    try:
+        errors.extend(catalog_summary.check())
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        errors.append(f"catalog export validation failed ({type(error).__name__})")
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
