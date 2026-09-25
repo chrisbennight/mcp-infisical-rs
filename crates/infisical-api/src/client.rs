@@ -480,10 +480,10 @@ impl InfisicalClient {
                 if let Ok(token) = &outcome {
                     *client.inner.token.write().await = Some(Arc::clone(token));
                 }
-                client
+                let failure = client
                     .finish_refresh(&flight_identity, outcome.as_ref().err())
                     .await;
-                sender.send_replace(Some(outcome));
+                sender.send_replace(Some(failure.map_or(outcome, Err)));
             });
             receiver
         };
@@ -496,9 +496,10 @@ impl InfisicalClient {
         if let Ok(Some(outcome)) = outcome {
             outcome
         } else {
-            self.finish_refresh(&receiver, Some(&ClientError::RefreshInterrupted))
-                .await;
-            Err(ClientError::RefreshInterrupted)
+            Err(self
+                .finish_refresh(&receiver, Some(&ClientError::RefreshInterrupted))
+                .await
+                .unwrap_or(ClientError::RefreshInterrupted))
         }
     }
 
@@ -517,7 +518,7 @@ impl InfisicalClient {
         &self,
         completed: &watch::Receiver<Option<RefreshOutcome>>,
         failure: Option<&ClientError>,
-    ) {
+    ) -> Option<ClientError> {
         let mut coordinator = self.inner.refresh.lock().await;
         if coordinator
             .in_flight
@@ -535,7 +536,16 @@ impl InfisicalClient {
                 (Instant::now() + cooldown, failure.clone())
             });
             coordinator.in_flight = None;
+            return coordinator.failure.as_ref().map(|(retry_at, failure)| {
+                let remaining = retry_at.saturating_duration_since(Instant::now());
+                ClientError::AuthenticationCooldown {
+                    failure: Box::new(failure.clone()),
+                    retry_after_seconds: remaining.as_secs()
+                        + u64::from(remaining.subsec_nanos() != 0),
+                }
+            });
         }
+        None
     }
 
     async fn invalidate_if_current(&self, used: &Arc<CachedToken>) {
@@ -1162,7 +1172,7 @@ mod tests {
             .and(path(LOGIN_PATH))
             .respond_with(move |_: &wiremock::Request| {
                 responder_count.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(500).set_delay(Duration::from_millis(200))
+                ResponseTemplate::new(503).set_delay(Duration::from_millis(200))
             })
             .mount(&server)
             .await;
@@ -1174,9 +1184,13 @@ mod tests {
             requests.spawn(async move { client.execute_read::<TestRead>(&[]).await });
         }
         while let Some(result) = requests.join_next().await {
+            let error = result.unwrap().unwrap_err();
+            assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
             assert!(matches!(
-                result.unwrap().unwrap_err(),
-                ClientError::Api(ref failure) if failure.kind() == ApiErrorKind::Server
+                error,
+                ClientError::AuthenticationCooldown { failure, .. }
+                    if matches!(*failure, ClientError::Api(ref original)
+                        if original.kind() == ApiErrorKind::Server)
             ));
         }
         assert_eq!(login_count.load(Ordering::SeqCst), 1);
@@ -1256,15 +1270,14 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path(LOGIN_PATH))
-                .respond_with(ResponseTemplate::new(status))
+                .respond_with(ResponseTemplate::new(status).insert_header("Retry-After", "1"))
                 .expect(1)
                 .mount(&server)
                 .await;
             let client = InfisicalClient::new(settings(&server)).unwrap();
-            assert!(matches!(
-                client.access_token().await,
-                Err(ClientError::Api(_))
-            ));
+            let first = client.access_token().await.err().unwrap();
+            assert_eq!(first.retry_after(), Some(super::AUTH_REJECTION_COOLDOWN));
+            assert!(matches!(first, ClientError::AuthenticationCooldown { .. }));
             let error = client.access_token().await.err().unwrap();
             let remaining = error.retry_after().unwrap();
             assert!(remaining > super::AUTH_FAILURE_COOLDOWN);
@@ -1500,9 +1513,11 @@ mod tests {
                 .await;
             let client = InfisicalClient::new(settings(&server)).unwrap();
 
-            assert_eq!(
-                client.execute_read::<TestRead>(&[]).await.unwrap_err(),
-                ClientError::InvalidResponse
+            let error = client.execute_read::<TestRead>(&[]).await.unwrap_err();
+            assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
+            assert!(
+                matches!(error, ClientError::AuthenticationCooldown { failure, .. }
+                if *failure == ClientError::InvalidResponse)
             );
         }
     }
@@ -2044,10 +2059,12 @@ mod tests {
         client_settings.allow_private_http = true;
         let client = InfisicalClient::new_with_system_resolver(client_settings, resolver).unwrap();
 
-        assert!(matches!(
-            client.execute_read::<TestRead>(&[]).await,
-            Err(ClientError::Transport(_))
-        ));
+        let error = client.execute_read::<TestRead>(&[]).await.unwrap_err();
+        assert_eq!(error.retry_after(), Some(super::AUTH_FAILURE_COOLDOWN));
+        assert!(
+            matches!(error, ClientError::AuthenticationCooldown { failure, .. }
+            if matches!(*failure, ClientError::Transport(_)))
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
             server.received_requests().await.unwrap().is_empty(),
