@@ -31,6 +31,7 @@ const CLOCK_SKEW_SECONDS: i64 = 30;
 const MAXIMUM_IDENTITY_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_JWKS_CACHE_TTL: Duration = Duration::from_hours(1);
 const UNKNOWN_KEY_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+const FAILED_KEY_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
 /// Current and optional previous HTTP connection credentials.
 pub struct GatewayBearers {
@@ -121,7 +122,7 @@ pub struct IdentityVerifier {
     settings: Arc<IdentityVerifierSettings>,
     client: reqwest::Client,
     cache: Arc<RwLock<KeyCache>>,
-    refresh: Arc<Mutex<()>>,
+    refresh: Arc<Mutex<Option<Instant>>>,
 }
 
 #[derive(Debug, Default)]
@@ -202,6 +203,8 @@ pub enum IdentityVerifierError {
     MissingKeyId,
     #[error("identity key is unavailable")]
     KeyUnavailable,
+    #[error("identity key refresh is cooling down; retry after {retry_after_seconds} seconds")]
+    KeyRefreshCooldown { retry_after_seconds: u64 },
     #[error("identity JWKS response is invalid")]
     InvalidJwks,
     #[error("identity JWKS response exceeds the configured bound")]
@@ -258,7 +261,7 @@ impl IdentityVerifier {
             settings: Arc::new(settings),
             client,
             cache: Arc::new(RwLock::new(KeyCache::default())),
-            refresh: Arc::new(Mutex::new(())),
+            refresh: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -303,8 +306,20 @@ impl IdentityVerifier {
             return Ok(key.clone());
         }
 
-        let _refresh_guard = self.refresh.lock().await;
+        let mut retry_at = self.refresh.lock().await;
         let now = Instant::now();
+        if let KeyLookup::Hit(key) = self.cache.read().await.lookup(key_id, now) {
+            return Ok(key.clone());
+        }
+        if let Some(deadline) = *retry_at {
+            let remaining = deadline.saturating_duration_since(now);
+            if !remaining.is_zero() {
+                return Err(IdentityVerifierError::KeyRefreshCooldown {
+                    retry_after_seconds: remaining.as_secs()
+                        + u64::from(remaining.subsec_nanos() != 0),
+                });
+            }
+        }
         let refresh_for_miss = match self.cache.read().await.lookup(key_id, now) {
             KeyLookup::Hit(key) => return Ok(key.clone()),
             KeyLookup::Miss {
@@ -320,7 +335,16 @@ impl IdentityVerifier {
             self.cache.write().await.defer_unknown_key_refresh(now);
         }
 
-        let set = self.fetch_jwks().await?;
+        // Reserve a bounded retry window before awaiting: cancellation releases the
+        // lock, but must not let another caller immediately restart the failed fetch.
+        *retry_at = Some(now + self.settings.request_timeout + FAILED_KEY_REFRESH_COOLDOWN);
+        let set = match self.fetch_jwks().await {
+            Ok(set) => set,
+            Err(error) => {
+                *retry_at = Some(Instant::now() + FAILED_KEY_REFRESH_COOLDOWN);
+                return Err(error);
+            }
+        };
         let key = set.find(key_id).cloned();
         let now = Instant::now();
         *self.cache.write().await = KeyCache {
@@ -329,6 +353,7 @@ impl IdentityVerifier {
             unknown_key_refresh_after: (refresh_for_miss || key.is_none())
                 .then_some(now + UNKNOWN_KEY_REFRESH_COOLDOWN),
         };
+        *retry_at = None;
         key.ok_or(IdentityVerifierError::KeyUnavailable)
     }
 
@@ -468,8 +493,18 @@ pub async fn require_mcp_authentication(
         let Some(identity) = single_header(request.headers(), IDENTITY_HEADER) else {
             return unauthorized();
         };
-        let Ok(principal) = verifier.verify(identity).await else {
-            return unauthorized();
+        let principal = match verifier.verify(identity).await {
+            Ok(principal) => principal,
+            Err(IdentityVerifierError::KeyRefreshCooldown {
+                retry_after_seconds,
+            }) => {
+                let mut response = unauthorized();
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, retry_after_seconds.into());
+                return response;
+            }
+            Err(_) => return unauthorized(),
         };
         request.extensions_mut().insert(principal);
     }
@@ -766,6 +801,113 @@ mod tests {
             server.received_requests().await.unwrap().is_empty(),
             "an unsafe DNS answer must be rejected before fetching JWKS"
         );
+    }
+
+    #[tokio::test]
+    async fn failed_jwks_refresh_is_bounded_for_empty_and_expired_caches() {
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{method, path},
+        };
+        for expired in [false, true] {
+            let server = MockServer::start().await;
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&attempts);
+            Mock::given(method("GET"))
+                .and(path("/jwks"))
+                .respond_with(move |_: &wiremock::Request| {
+                    if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                        ResponseTemplate::new(503)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(JwkSet {
+                            keys: vec![signature_jwk()],
+                        })
+                    }
+                })
+                .expect(2)
+                .mount(&server)
+                .await;
+            let verifier = IdentityVerifier::new(IdentityVerifierSettings {
+                jwks_url: Url::parse(&format!("{}/jwks", server.uri())).unwrap(),
+                issuer: "https://gateway.example".into(),
+                allow_private_http: false,
+                request_timeout: Duration::from_secs(1),
+                cache_ttl: Duration::from_secs(60),
+            })
+            .unwrap();
+            if expired {
+                *verifier.cache.write().await = KeyCache {
+                    set: Some(JwkSet {
+                        keys: vec![signature_jwk()],
+                    }),
+                    expires_at: Some(Instant::now()),
+                    unknown_key_refresh_after: None,
+                };
+            }
+            assert!(matches!(
+                verifier.key_for("gateway-main").await,
+                Err(IdentityVerifierError::KeyUnavailable)
+            ));
+            for _ in 0..3 {
+                let mut callers = tokio::task::JoinSet::new();
+                for _ in 0..16 {
+                    let verifier = verifier.clone();
+                    callers.spawn(async move { verifier.key_for("gateway-main").await });
+                }
+                while let Some(result) = callers.join_next().await {
+                    assert!(matches!(
+                        result.unwrap(),
+                        Err(IdentityVerifierError::KeyRefreshCooldown { .. })
+                    ));
+                }
+            }
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            *verifier.refresh.lock().await = Some(Instant::now());
+            assert_eq!(
+                verifier.key_for("gateway-main").await.unwrap(),
+                signature_jwk()
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            assert!(verifier.refresh.lock().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_jwks_fetch_retains_a_bounded_retry_window() {
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let observed = Arc::clone(&started);
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(move |_: &wiremock::Request| {
+                observed.notify_one();
+                ResponseTemplate::new(503).set_delay(Duration::from_millis(200))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let verifier = IdentityVerifier::new(IdentityVerifierSettings {
+            jwks_url: Url::parse(&format!("{}/jwks", server.uri())).unwrap(),
+            issuer: "https://gateway.example".into(),
+            allow_private_http: false,
+            request_timeout: Duration::from_secs(1),
+            cache_ttl: Duration::from_secs(60),
+        })
+        .unwrap();
+        let caller = verifier.clone();
+        let task = tokio::spawn(async move { caller.key_for("gateway-main").await });
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(matches!(verifier.key_for("gateway-main").await,
+            Err(IdentityVerifierError::KeyRefreshCooldown { retry_after_seconds }) if retry_after_seconds <= 6));
+        assert!(verifier.refresh.lock().await.unwrap() <= Instant::now() + Duration::from_secs(6));
     }
 
     #[test]

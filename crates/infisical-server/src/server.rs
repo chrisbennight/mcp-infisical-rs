@@ -1089,6 +1089,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_identity_keys_refuse_requests_and_return_bounded_retry_guidance() {
+        let (router, key, upstream) = test_router().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("jwks-error-canary"))
+            .with_priority(1)
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        for attempt in 0..3 {
+            let response = router
+                .clone()
+                .oneshot(mcp_request(
+                    &initialize_body(),
+                    Some(CURRENT),
+                    Some(&identity),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            if attempt > 0 {
+                let retry = response.headers()[header::RETRY_AFTER]
+                    .to_str()
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+                assert!((1..=5).contains(&retry));
+            }
+            assert!(
+                !json_body(response)
+                    .await
+                    .to_string()
+                    .contains("jwks-error-canary")
+            );
+        }
+        assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn authenticated_streamable_http_initializes_and_lists_bootstrap_catalog() {
         let (router, key, jwks_server) = test_router().await;
         let now = unix_timestamp();
