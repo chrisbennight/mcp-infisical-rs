@@ -41,6 +41,15 @@ authentication failure retries a declared idempotent read once; observable
 reads and mutations invalidate the rejected token for the next call but are
 never replayed.
 
+`INFISICAL_API_MAX_CONCURRENT_REQUESTS` bounds simultaneous upstream HTTP
+requests across every client clone, including authentication, reads, and writes.
+It defaults to 32 and accepts 1 through 256 in both HTTP and stdio modes. Waiting
+for capacity consumes the same per-request timeout as network work. An exhausted
+budget rejects that HTTP request before sending it. This is separate from
+`INFISICAL_MCP_MAX_CONCURRENT_REQUESTS`, which bounds incoming HTTP requests.
+Bulk KMS private-key preflights also have a total deadline and at most eight
+concurrent reads per batch; they share the upstream budget with other work.
+
 Failed logins pause new login attempts for five seconds; rejected credentials
 pause them for thirty seconds. Upstream `Retry-After` guidance can extend the
 pause up to five minutes. Callers receive a safe remaining-wait hint and the

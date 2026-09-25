@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::files::SecretFilePlane;
 
 /// Revision of the discovery schemas; clients must include it in cache keys.
-pub const SCHEMA_REVISION: &str = "2026-09-25.3";
+pub const SCHEMA_REVISION: &str = "2026-09-25.4";
 
 /// gateway: bearer plus identity JWT; standalone: bearer only.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
@@ -79,7 +79,9 @@ struct RuntimeLimits {
     request_timeout_seconds: Option<f64>,
     /// Upstream response body ceiling before local projection or pagination.
     upstream_response_bytes: usize,
-    /// Timeout in seconds for each upstream request, including authentication.
+    /// Shared upstream HTTP concurrency ceiling, including login.
+    upstream_max_concurrent_requests: usize,
+    /// Per-request seconds, including capacity wait; login has its own budget.
     upstream_request_timeout_seconds: f64,
     /// Serialized MCP tool result ceiling, including compatibility text.
     tool_result_bytes: usize,
@@ -134,6 +136,7 @@ impl RuntimeSettings {
                 max_concurrent_requests,
                 request_timeout_seconds: timeout,
                 upstream_response_bytes: client.max_response_bytes(),
+                upstream_max_concurrent_requests: client.max_concurrent_requests(),
                 upstream_request_timeout_seconds: client.request_timeout().as_secs_f64(),
                 tool_result_bytes: crate::tools::MAX_TOOL_RESULT_BYTES,
             },

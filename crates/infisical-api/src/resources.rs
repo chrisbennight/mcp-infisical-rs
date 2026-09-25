@@ -1046,6 +1046,19 @@ pub enum ResourceError {
         "KMS bulk requests must contain 1 to 100 unique keys and at most 512 KiB of aggregate decoded key material"
     )]
     InvalidKmsBulkRequest,
+    #[error(
+        "KMS bulk preflight failed after validating {validated} of {requested} keys: {source}; other preflight reads may have created access events, but the bulk private-key request was not sent"
+    )]
+    KmsBulkPreflightFailed {
+        validated: usize,
+        requested: usize,
+        #[source]
+        source: Box<ResourceError>,
+    },
+    #[error(
+        "KMS bulk preflight deadline expired after validating {validated} of {requested} keys; other preflight reads may have created access events, but the bulk private-key request was not sent"
+    )]
+    KmsBulkPreflightTimeout { validated: usize, requested: usize },
     #[error("KMS ciphertext or signature input violates the bounded base64 contract")]
     InvalidKmsCryptographicInput,
     #[error("Infisical KMS response violated the bounded typed contract")]

@@ -9082,7 +9082,9 @@ struct KmsBulkPrivateKeyRevealInput {
     /// Opaque Infisical project identifier that must own every key.
     #[schemars(regex(pattern = r"^[A-Za-z0-9_-]{1,128}$"))]
     project_id: String,
-    /// One to one hundred unique canonical KMS key UUIDs.
+    /// One to one hundred unique canonical KMS key UUIDs. Independent preflight reads
+    /// run with bounded concurrency and a total deadline before the bulk request.
+    /// Failed preflights may create access events but never send the bulk request.
     #[schemars(length(min = 1, max = 100))]
     key_ids: Vec<String>,
     /// Must be true to reveal every private key at the MCP output boundary.

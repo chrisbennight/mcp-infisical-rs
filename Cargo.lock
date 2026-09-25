@@ -1252,8 +1252,10 @@ name = "infisical-api"
 version = "0.1.0"
 dependencies = [
  "aws-lc-rs",
+ "axum",
  "base64",
  "fips205",
+ "futures-util",
  "httpdate",
  "pem-rfc7468",
  "pkcs8",
