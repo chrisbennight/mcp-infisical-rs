@@ -457,3 +457,53 @@ async fn standalone_http_authenticates_every_request_and_has_no_session_state() 
     );
     child.kill().await.unwrap();
 }
+
+#[tokio::test]
+async fn stdio_returns_safe_structured_argument_errors_without_upstream_requests() {
+    let server = MockServer::start().await;
+    let mut child = command(&server.uri())
+        .args(["--transport", "stdio"])
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    send_message(&mut child, &initialize()).await;
+    assert!(read_message(&mut reader).await.get("result").is_some());
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+            "name":"infisical.read", "arguments":{"operation":"projects.list",
+                "arguments":{"offset":"stdio-sensitive-input-canary"}}
+        }}),
+    )
+    .await;
+    let result = read_message(&mut reader).await;
+    assert_eq!(result["result"]["isError"], true);
+    let error = &result["result"]["structuredContent"]["error"];
+    assert_eq!(error["operation"], "projects.list");
+    assert_eq!(error["effect"], "notStarted");
+    assert_eq!(error["recovery"], "correctRequest");
+    assert!(!result.to_string().contains("stdio-sensitive-input-canary"));
+    drop(child.stdin.take());
+    assert!(
+        timeout(DEADLINE, child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    let mut diagnostics = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut diagnostics)
+        .await
+        .unwrap();
+    assert!(!diagnostics.contains("stdio-sensitive-input-canary"));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}

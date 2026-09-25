@@ -1228,7 +1228,15 @@ mod tests {
         .await;
         assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.starts_with("projects.list produced"));
+        let error = &response["result"]["structuredContent"]["error"];
+        assert_eq!(error["category"], "capacity");
+        assert_eq!(error["operation"], "projects.list");
+        assert!(
+            error["correction"]
+                .as_str()
+                .unwrap()
+                .starts_with("projects.list produced")
+        );
         assert!(text.contains("Retry with a smaller limit"));
         assert!(!text.contains("result-budget-canary"));
         assert!(!text.contains("must not be repeated"));
@@ -1297,6 +1305,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn known_argument_errors_are_structured_and_unknown_operations_remain_protocol_errors() {
+        let (router, key, upstream) = test_router().await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        let invalid = call_authenticated_tool(router.clone(), &identity, 2, "infisical.read",
+            json!({"operation": "projects.list", "arguments": {"limit": "invalid-sensitive-value-canary"}})).await;
+        assert_eq!(invalid["result"]["isError"], true);
+        let error = &invalid["result"]["structuredContent"]["error"];
+        assert_eq!(error["operation"], "projects.list");
+        assert_eq!(error["category"], "validation");
+        assert_eq!(error["effect"], "notStarted");
+        assert_eq!(error["recovery"], "correctRequest");
+        assert_eq!(error["fieldPath"], "arguments");
+        let compatibility: Value =
+            serde_json::from_str(invalid["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(compatibility, invalid["result"]["structuredContent"]);
+        assert!(
+            !invalid
+                .to_string()
+                .contains("invalid-sensitive-value-canary")
+        );
+        let unknown = call_authenticated_tool(
+            router,
+            &identity,
+            3,
+            "infisical.read",
+            json!({"operation": "unknown-operation-canary", "arguments": {}}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], -32602);
+        assert!(!unknown.to_string().contains("unknown-operation-canary"));
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/jwks");
+    }
+
+    #[tokio::test]
+    async fn upstream_failure_categories_and_pacing_are_safe_on_the_wire() {
+        for (status, category, recovery) in [
+            (403, "permissionDenied", "inspectConfiguration"),
+            (404, "notFound", "correctRequest"),
+            (429, "rateLimited", "wait"),
+        ] {
+            let (router, key, upstream) = test_router().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v1/auth/universal-auth/login"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "accessToken":"error-wire-token-canary", "expiresIn":300,
+                    "accessTokenMaxTTL":600, "tokenType":"Bearer"
+                })))
+                .expect(1)
+                .mount(&upstream)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/projects"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("x-request-id", "safe-request-123")
+                        .insert_header("retry-after", "7")
+                        .set_body_string("upstream-error-body-canary"),
+                )
+                .expect(1)
+                .mount(&upstream)
+                .await;
+            let now = unix_timestamp();
+            let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+            let response = call_authenticated_tool(
+                router,
+                &identity,
+                2,
+                "infisical.read",
+                json!({"operation":"projects.list", "arguments":{}}),
+            )
+            .await;
+            let error = &response["result"]["structuredContent"]["error"];
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(error["category"], category);
+            assert_eq!(error["recovery"], recovery);
+            assert_eq!(error["effect"], "unknown");
+            assert_eq!(error["requestId"], "safe-request-123");
+            assert_eq!(error["retryAfterSeconds"], 7);
+            assert!(!response.to_string().contains("upstream-error-body-canary"));
+            assert!(!response.to_string().contains("error-wire-token-canary"));
+        }
+    }
+
+    #[tokio::test]
     async fn failed_kms_bulk_preflight_reports_access_events_without_exporting_keys() {
         let (router, signing_key, upstream) = test_router().await;
         let project_id = "11111111-1111-4111-8111-111111111111";
@@ -1337,6 +1433,9 @@ mod tests {
         let encoded = response.to_string();
         assert!(encoded.contains("access events"));
         assert!(encoded.contains("bulk private-key request was not sent"));
+        let error = &response["result"]["structuredContent"]["error"];
+        assert_eq!(error["effect"], "notStarted");
+        assert_eq!(error["preflightObservationsPossible"], true);
         assert!(!encoded.contains("private-key-wire-canary"));
         assert!(!encoded.contains("kms-wire-test-token"));
     }
@@ -1432,7 +1531,15 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(rejected_update["error"]["code"], -32602);
+        assert_eq!(rejected_update["result"]["isError"], true);
+        assert_eq!(
+            rejected_update["result"]["structuredContent"]["error"]["category"],
+            "validation"
+        );
+        assert_eq!(
+            rejected_update["result"]["structuredContent"]["error"]["effect"],
+            "notStarted"
+        );
         let rejected_delete = call_authenticated_tool(
             router.clone(),
             &identity,
@@ -4987,7 +5094,15 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(unconfirmed_rotation["error"]["code"], -32602);
+        assert_eq!(unconfirmed_rotation["result"]["isError"], true);
+        assert_eq!(
+            unconfirmed_rotation["result"]["structuredContent"]["error"]["category"],
+            "validation"
+        );
+        assert_eq!(
+            unconfirmed_rotation["result"]["structuredContent"]["error"]["effect"],
+            "notStarted"
+        );
         assert!(
             upstream_server
                 .received_requests()
@@ -5025,7 +5140,15 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(unconfirmed_sync["error"]["code"], -32602);
+        assert_eq!(unconfirmed_sync["result"]["isError"], true);
+        assert_eq!(
+            unconfirmed_sync["result"]["structuredContent"]["error"]["category"],
+            "validation"
+        );
+        assert_eq!(
+            unconfirmed_sync["result"]["structuredContent"]["error"]["effect"],
+            "notStarted"
+        );
         assert!(
             upstream_server
                 .received_requests()
@@ -6606,7 +6729,10 @@ mod tests {
             )
             .await;
             assert_eq!(result["result"]["isError"], true, "{operation}: {result}");
-            assert!(result["result"].get("structuredContent").is_none());
+            let error = &result["result"]["structuredContent"]["error"];
+            assert_eq!(error["category"], "responseValidation");
+            assert_eq!(error["effect"], "unknown");
+            assert_eq!(error["recovery"], "reconcile");
             assert!(!result.to_string().contains("unexpected-project-canary"));
             assert!(!result.to_string().contains("env-1"));
         }
@@ -6646,7 +6772,10 @@ mod tests {
             )
             .await;
             assert_eq!(result["result"]["isError"], true, "{delivery}: {result}");
-            assert!(result["result"].get("structuredContent").is_none());
+            let error = &result["result"]["structuredContent"]["error"];
+            assert_eq!(error["category"], "responseValidation");
+            assert_eq!(error["effect"], "unknown");
+            assert_eq!(error["recovery"], "reconcile");
             assert!(!result.to_string().contains("wrong-scope-wire-canary"));
             assert!(!result.to_string().contains("mcp-file://"));
         }

@@ -18,6 +18,7 @@ use crate::files::SecretFilePlane;
 
 mod collection_cost;
 mod discovery;
+mod execution_error;
 pub mod files;
 mod projections;
 pub mod runtime;

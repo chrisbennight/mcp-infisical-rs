@@ -1048,6 +1048,35 @@ secret-tree paths where applicable. Upstream failures become tool-level errors
 with a fixed safe category; API failures also include their status and any
 validated request ID. Response bodies are never forwarded.
 
+### Structured execution errors
+
+A known operation called through its correct executor reports execution and
+argument failures with `isError: true`. Both `structuredContent.error` and the
+matching JSON text carry `category`, `operation`, `effect`, `recovery`, and
+`correction`. A safe `fieldPath`, validated `requestId`, and bounded
+`retryAfterSeconds` appear when available. Inspect the error before interpreting
+the operation's success schema. `types.describe` accepts `executionError` for
+the error object's schema.
+
+`recovery` distinguishes correcting arguments, waiting, inspecting configuration,
+and reconciling an uncertain result. Pacing guidance never authorizes automatic
+mutation replay. A generic upstream 404 is `notFound`; it does not establish that
+an API route is unavailable. Compiled omissions remain capability-discovery facts.
+
+`effect: "notStarted"` means the final action was not initiated, as with a failed
+capacity reservation or KMS bulk preflight. `preflightObservationsPossible` is true
+when earlier preflight reads may have created audit events, false when refusal is
+known to precede them, and omitted when that phase is unknown. `effect: "unknown"`
+requires reconciliation; transport failure, invalid responses, and post-execution
+delivery failures cannot prove that nothing happened. Queue and authentication
+failures do not erase possible earlier operation steps. Successful receipts retain
+their existing `applied` or `approvalRequired` outcomes where those receipts apply.
+
+Malformed executor envelopes, unknown operations, and wrong executor routing stay
+protocol errors. Invalid sensitive values are never repeated in correction text.
+Errors stay inline even when successful results request file delivery; retained
+delivery references in oversized-result errors remain usable until expiration.
+
 ## Project and environment administration
 
 The product release pin and the route namespace are independent. For Infisical
