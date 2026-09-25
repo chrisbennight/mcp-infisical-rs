@@ -195,6 +195,8 @@ struct ListSecretMetadataQuery {
     // The v4 route is camelCase; deprecated v3 routes used `include_imports`.
     #[serde(rename = "includeImports")]
     include_imports: DisabledFlag,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag_slugs: Option<String>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -679,6 +681,31 @@ impl InfisicalClient {
         scope: &SecretScope,
         page: PageRequest,
     ) -> Result<Page<SecretMetadata>, ResourceError> {
+        self.list_secret_metadata_filtered(scope, page, &[]).await
+    }
+
+    /// List metadata with a bounded tag filter applied by the pinned upstream route.
+    ///
+    /// Empty tags leave the filter unset. Local pagination and projection do not
+    /// reduce the upstream response; exact paths and tag filters do.
+    ///
+    /// # Errors
+    ///
+    /// Rejects more than sixteen or duplicate tags before authentication, and
+    /// rejects returned records with no matching requested tag.
+    pub async fn list_secret_metadata_filtered(
+        &self,
+        scope: &SecretScope,
+        page: PageRequest,
+        tags: &[crate::TagSlug],
+    ) -> Result<Page<SecretMetadata>, ResourceError> {
+        if tags.len() > 16 {
+            return Err(ResourceError::InvalidSecretTagFilter);
+        }
+        let wanted: HashSet<_> = tags.iter().map(crate::TagSlug::as_str).collect();
+        if wanted.len() != tags.len() {
+            return Err(ResourceError::InvalidSecretTagFilter);
+        }
         let response = self
             .execute_read::<ListSecretMetadata>(&ListSecretMetadataQuery {
                 project_id: scope.project_id().as_str().to_owned(),
@@ -689,8 +716,24 @@ impl InfisicalClient {
                 recursive: scope.recursive(),
                 include_personal_overrides: DisabledFlag::False,
                 include_imports: DisabledFlag::False,
+                tag_slugs: (!tags.is_empty()).then(|| {
+                    tags.iter()
+                        .map(crate::TagSlug::as_str)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                }),
             })
             .await?;
+        if !wanted.is_empty()
+            && response.secrets.iter().any(|secret| {
+                !secret
+                    .tags
+                    .iter()
+                    .any(|tag| wanted.contains(tag.slug.as_str()))
+            })
+        {
+            return Err(ResourceError::InvalidSecretTagResponse);
+        }
         paginate(
             page,
             response
@@ -1056,6 +1099,47 @@ mod tests {
         assert!(!serialized.contains("response-secret-canary"));
         assert!(!serialized.contains("secretValue"));
         assert!(!serialized.contains("secretComment"));
+    }
+
+    #[tokio::test]
+    async fn tag_filter_is_bounded_before_authentication_and_checks_returned_tags() {
+        let server = MockServer::start().await;
+        let client = InfisicalClient::new(settings(&server)).unwrap();
+        let scope = payments_scope();
+        let page = PageRequest::new(0, 1).unwrap();
+        let duplicate = vec![crate::TagSlug::new("team").unwrap(); 2];
+        assert!(matches!(
+            client
+                .list_secret_metadata_filtered(&scope, page, &duplicate)
+                .await,
+            Err(ResourceError::InvalidSecretTagFilter)
+        ));
+        let excessive: Vec<_> = (0..17)
+            .map(|index| crate::TagSlug::new(format!("tag-{index}")).unwrap())
+            .collect();
+        assert!(matches!(
+            client
+                .list_secret_metadata_filtered(&scope, page, &excessive)
+                .await,
+            Err(ResourceError::InvalidSecretTagFilter)
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        mount_login(&server, "tag-filter-fixture-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v4/secrets"))
+            .and(query_param("tagSlugs", "team"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"secrets": [{
+                "id": "secret-1", "environment": "prod", "version": 1, "type": "shared",
+                "secretKey": "APP_KEY", "secretValue": "unmatched-value-canary", "secretValueHidden": true,
+                "tags": [{"id": "tag-2", "name": "Other", "slug": "other"}]
+            }]})))
+            .expect(1).mount(&server).await;
+        let error = client
+            .list_secret_metadata_filtered(&scope, page, &duplicate[..1])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ResourceError::InvalidSecretTagResponse));
+        assert!(!format!("{error} {error:?}").contains("unmatched-value-canary"));
     }
 
     #[tokio::test]

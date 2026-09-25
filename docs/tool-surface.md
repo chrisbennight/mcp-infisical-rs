@@ -71,6 +71,45 @@ queries to 128 characters; handlers enforce these bounds. Use
 `operations.describe` with `includeOutputSchema: false` for an input-only
 schema. These defaults replace the former unbounded discovery response.
 
+### Collection cost and projections
+
+`operations.describe.pagination` identifies each resource list's upstream cost:
+
+| Value | What a page does | Effect of a smaller `limit` |
+| --- | --- | --- |
+| `nativeUpstream` | Sends page coordinates to Infisical | Reduces requested records upstream and in MCP output |
+| `localSlice` | Fetches the complete scoped collection, then selects a local page | Reduces MCP output only |
+| `boundedUnpaged` | Returns a validated collection without page coordinates | No page limit is available |
+
+Offset pages are separate reads of mutable collections, not a stable snapshot.
+Use each returned continuation until it is absent or null, and allow for records
+moving between pages if the upstream collection changes. The effective upstream
+response-byte ceiling is reported by `server.capabilities.runtime.limits` and
+applies before local slicing or projection. No cross-caller inventory cache is
+introduced.
+
+Project lists return identity, name, slug, type, and organization by default.
+Set `includeDetails: true` for descriptions and embedded environments; exact
+`projects.get` still returns full details. Secret metadata lists retain secret
+identity, name, environment, path, version, type, and hidden-value state. Set
+`includeMetadata: true` to include operator metadata values, which may contain
+sensitive configuration, and `includeTags: true` for full embedded tag details.
+These projections reduce MCP output, not upstream bytes or audit events.
+
+For secret and folder inventory, choose an exact path and leave `recursive`
+false unless descendants are needed. Secret metadata also accepts `tagSlugs`,
+with up to sixteen distinct validated tag slugs, each at most 64 characters.
+The [pinned secret router](https://github.com/Infisical/infisical/blob/v0.160.12/backend/src/server/routes/v4/secret-router.ts)
+applies this comma-separated filter upstream; the client encodes it through
+its typed query serializer and rejects returned secrets with no matching tag.
+These filters reduce the upstream collection. A smaller MCP `limit` cannot fix
+an oversized unpaged upstream body.
+For project inventory that exceeds that bound, use `projects.get` with a known
+project identifier. Native collection filters and page parameters remain bound
+to the pinned API; the server does not send invented pagination parameters.
+
+### Runtime capabilities
+
 `server.info` reports the active transport, HTTP authentication profile, build
 version, and schema revision. `server.capabilities` keeps the compiled capability
 catalog separate from `runtime`, which reports this instance's limits and delivery
