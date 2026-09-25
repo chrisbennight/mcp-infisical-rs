@@ -1,5 +1,5 @@
 import rawManifest from './manifest.json' with { type: 'json' };
-import { schemaRevision, type Operation, type InputByOperation, type OutputByOperation, type ExecutionError } from './generated.js';
+import { schemaRevision, type Operation, type InputByOperation, type OutputByOperation, type ExecutionError, type FileResultWire } from './generated.js';
 export type { Operation, InputByOperation, OutputByOperation, ExecutionError } from './generated.js';
 
 /** Full values stay in the host until the caller explicitly reads them. */
@@ -18,15 +18,12 @@ export interface Transport {
 }
 /** A host-owned JSON Schema 2020-12 validator. Do not log either argument. */
 export type Validate = (schema: unknown, value: unknown) => boolean;
-export interface FileResult<O extends Operation> {
-  operation: O;
-  resultFile: { uri: string; name: string; mimeType: 'application/json' };
-}
+export type FileResult<O extends Operation> = FileResultWire & { operation: O };
 export type Outcome<T> =
   | { kind: 'success'; value: HostValue<T> }
   | { kind: 'error'; error: HostValue<ExecutionError> };
 interface OperationMetadata { executor: string; inputSchema: unknown; outputSchema: unknown; profiles: string[] }
-interface Manifest { schemaRevision: string; executionErrorSchema: unknown; operations: Record<string, OperationMetadata> }
+interface Manifest { schemaRevision: string; executionErrorSchema: unknown; fileResultSchema: unknown; operations: Record<string, OperationMetadata> }
 const manifest: Manifest = rawManifest;
 const object = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -97,7 +94,8 @@ export class HostClient {
     }
     if (file) {
       const ref = response.value.resultFile;
-      if (response.value.operation !== operation || !object(ref) || typeof ref.uri !== 'string' ||
+      if (!validate(this.#validate, manifest.fileResultSchema, response.value) ||
+          response.value.operation !== operation || !object(ref) || typeof ref.uri !== 'string' ||
           !ref.uri.startsWith('mcp-file://infisical/') || typeof ref.name !== 'string' || ref.mimeType !== 'application/json') {
         throw new Error('The result file contract is invalid; reconcile effects before retrying');
       }

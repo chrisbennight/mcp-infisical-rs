@@ -21,7 +21,8 @@ const UNIVERSAL_AUTH_LOGIN_PATH: &str = "auth/universal-auth/login";
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
-const MAXIMUM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Largest configured upstream response body, used to bound downstream delivery.
+pub const MAXIMUM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TOKEN_REFRESH_SKEW: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 32;
 const MAXIMUM_CONCURRENT_REQUESTS: usize = 256;

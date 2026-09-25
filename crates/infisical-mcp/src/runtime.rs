@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::files::SecretFilePlane;
 
 /// Revision of the discovery schemas; clients must include it in cache keys.
-pub const SCHEMA_REVISION: &str = "2026-09-25.6";
+pub const SCHEMA_REVISION: &str = "2026-09-25.7";
 
 /// gateway: bearer plus identity JWT; standalone: bearer only.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
@@ -47,22 +47,22 @@ pub enum Transport {
     StreamableHttp,
 }
 
-/// Effective limits and delivery support, independent of upstream permissions.
+/// Effective limits and delivery; upstream authority is separate.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeCapabilities {
-    /// Static operation capabilities enabled in this instance.
+    /// Enabled operation profile.
     pub operation_profile: crate::policy::OperationProfile,
-    /// Transport currently serving this handler.
+    /// Active transport.
     pub transport: Transport,
-    /// HTTP authentication profile; absent for stdio or an undeclared library host.
+    /// HTTP authentication; omitted outside HTTP.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_profile: Option<HttpProfile>,
-    /// Request, response, concurrency, and time bounds enforced by this instance.
+    /// Enforced size, concurrency and time limits.
     limits: RuntimeLimits,
-    /// Secret and whole-result delivery methods supported by this instance.
+    /// Supported secret and whole-result delivery.
     delivery: DeliveryCapabilities,
-    /// Permissions and license entitlement have not been tested by discovery.
+    /// Permissions and license were not probed.
     #[schemars(extend("const" = "notProbed"))]
     upstream_access: &'static str,
 }
@@ -70,37 +70,37 @@ pub(crate) struct RuntimeCapabilities {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeLimits {
-    /// HTTP request body or stdio message ceiling; absent when the host has not declared it.
+    /// HTTP body or stdio message byte limit; omitted if undeclared.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_request_bytes: Option<usize>,
-    /// HTTP concurrency ceiling; absent when no HTTP middleware applies.
+    /// Concurrent HTTP limit; omitted outside HTTP.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_concurrent_requests: Option<usize>,
-    /// HTTP request deadline in seconds; absent when no HTTP middleware applies.
+    /// HTTP deadline in seconds; omitted outside HTTP.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_timeout_seconds: Option<f64>,
-    /// Upstream response body ceiling before local projection or pagination.
+    /// Upstream body byte limit before local filtering.
     upstream_response_bytes: usize,
-    /// Shared upstream HTTP concurrency ceiling, including login.
+    /// Shared upstream concurrency limit, including login.
     upstream_max_concurrent_requests: usize,
-    /// Per-request seconds, including capacity wait; login has its own budget.
+    /// Upstream deadline seconds including queueing; login is separate.
     upstream_request_timeout_seconds: f64,
-    /// Serialized MCP tool result ceiling, including compatibility text.
+    /// MCP result byte limit, including compatibility text.
     tool_result_bytes: usize,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct DeliveryCapabilities {
-    /// Default delivery for operations that return secret values.
+    /// Default secret-value delivery.
     default_secret_delivery: &'static str,
-    /// Accepted secret delivery modes; reference requires a file-aware host.
+    /// Secret modes; reference needs a file-aware host.
     secret_modes: Vec<&'static str>,
-    /// Accepted whole-result delivery modes on executors.
+    /// Executor whole-result delivery modes.
     result_modes: Vec<&'static str>,
-    /// Whether typed upload references can be resolved by this instance.
+    /// Whether typed uploads are supported.
     upload_references: bool,
-    /// Effective in-memory file settings; absent when the extension is disabled.
+    /// In-memory file limits; omitted when disabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     file_transfer: Option<crate::files::FileCapabilities>,
 }

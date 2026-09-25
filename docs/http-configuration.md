@@ -83,7 +83,7 @@ same scheme and authority as the `/mcp` endpoint, for example
 operations. Staged envelopes live only in zeroizing memory, expire after
 `INFISICAL_MCP_FILE_TTL_SECONDS` (default 120), are capped at
 `INFISICAL_MCP_FILE_MAX_STAGED` (default 16) outstanding entries, and each
-serves exactly one download. The download route authenticates with the
+permits at most one download attempt. The download route authenticates with the
 per-download `Infisical-Transfer-Credential` header minted by
 `files/authorizeDownload` rather than the gateway bearer, because the gateway
 fetches file transfers with descriptor headers alone. Every envelope is padded
@@ -91,6 +91,35 @@ to a fixed-size bucket with a random pad: the size a staging intermediary
 publishes is a coarse bucket count — constant within a bucket and across
 repeated reveals of one value, though values on opposite sides of a bucket
 boundary still publish different counts — and the digest is salted.
+
+`INFISICAL_MCP_FILE_MAX_STAGED_BYTES` bounds aggregate promised and retained
+transfer bytes (default 512 MiB, configurable from 256 MiB through 1 GiB).
+An output reserves its full 128 MiB envelope ceiling before upstream work,
+then releases the unused portion after serialization. Requests that need both
+a secret reference and a whole-result file reserve two envelopes. A staged
+value keeps its charge after redemption until the HTTP response body is dropped.
+An upload reserves its declared length, or the full 64 KiB upload ceiling when
+no length is supplied; failed or cancelled transfers release their reservation.
+A completed upload retains a charge for its allocated buffer, including spare
+capacity after a short upload.
+Expired staged entries release their bytes when swept. Uploaded values leave
+this accounting when an operation consumes them. This limit covers transfer
+buffers and reservations, not total process memory or upstream decoding buffers.
+
+The output reservation accommodates the client’s maximum 16 MiB upstream body,
+even allowing six JSON bytes per decoded byte and another 2 MiB for fixed
+wrappers and bounded identifiers. Credential creation selects its token or
+client-secret value and metadata from one response; dynamic SQL credentials
+have explicit username/password limits. Certificate issuance and renewal cap
+combined normalized material at 96 KiB, and SSH issuance bounds its key material.
+KMS bulk reveal selects at most 100 keys from one bounded final response; its
+preflight responses are not concatenated into the result. Changing these
+contracts requires reviewing the envelope reservation as well as the API limits.
+
+Runtime capabilities report both aggregate and per-envelope limits. Large
+whole-result responses exceeding the envelope ceiling fail without an inline
+fallback; reconcile any completed mutation before retrying.
+
 The plane also carries the reverse direction: `secrets.create` and
 `secrets.update` accept a `secretValueFile` reference in place of an inline
 `secretValue`, while `certificates.import` accepts `certificateFile` and
@@ -100,7 +129,8 @@ and the credentialed `PUT /files/upload/{id}` route, so locally held material
 need not enter model context. Inline `secretValue` remains supported unchanged.
 Every executor additionally accepts `resultDelivery: "file"`, which stages any
 operation's whole structured result on the plane and returns a fixed
-operation-plus-`resultFile` wrapper, letting a host read large results
+operation-plus-`resultFile` wrapper with a bounded, value-free reconciliation
+receipt, letting a host read large results
 selectively out of context; the oversized-result refusal names this retry path
 when the plane is configured and the call is classified as safely repeatable —
 a refusal whose effect already applied never points at a retry.
@@ -108,3 +138,44 @@ Staged state is instance-local: a reference resolves only on the instance that
 minted it, so run a single replica or pin download routing to the staging instance. Enable the plane only for a client or gateway
 that implements this extension; ordinary MCP clients cannot resolve these
 references.
+
+### Transfer lifetime and uncertain receipt
+
+Before an operation that can issue a credential once, inspect
+the `runtime.delivery.fileTransfer` field from `server.capabilities` and the
+operation's delivery schema.
+The capability reports this server's extension identifier and version, effective
+expiry, instance locality, and restart loss. It does not assert that the client
+has a compatible transfer adapter. Establish that adapter before issuance;
+an explicit reference request never falls back to putting values inline.
+
+An authenticated GET consumes the staged download before the recipient can
+acknowledge receipt. A connection failure after redemption can therefore lose
+delivery. A wrong credential or HEAD request does not consume the value.
+Reauthorizing an unconsumed reference invalidates the previous download
+credential; it does not restore an already consumed or expired value. Restart
+loses staged values and authorizations. Expiry and restart do not revoke a
+credential that Infisical has already created.
+
+The whole-result wrapper retains a `reconciliation` list for credential issuance,
+containing only typed resource kinds and bounded resource identifiers. It never
+contains credential values or resource labels. An empty list means no supported
+identifier was available; retain the request scope and use scoped inventory.
+
+Keep the original operation, input scope, and returned non-secret resource
+identifiers in the authorized host. If delivery is uncertain, inspect that exact
+resource before deciding whether to revoke, replace, or issue another credential.
+For client secrets and tokens, retain their metadata identifiers; for dynamic
+leases, retain the lease identifier and original project/environment/path; for
+certificates, retain the certificate or request identifier and owning project.
+Do not use a matching display name alone to select a resource for revocation.
+Do not replay issuance because a file download failed. If the complete tool
+response was also lost, reconcile through the scoped inventory or upstream audit
+records; this process cannot promise recovery of the original credential value.
+
+For replicas, the operator's deployment configuration must route authorization,
+upload, and download requests to the process that owns the reference. An MCP
+session does not itself provide that routing. This server does not persist
+staged credentials in a shared database. Stdio hosts can compose typed calls
+and filter inline results through the host-client package; the stdio transport
+has no file listener and exposes no local path access.

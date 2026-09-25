@@ -30,6 +30,10 @@ use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
+#[path = "files/budget.rs"]
+mod budget;
+use budget::{ByteBudget, ByteReservation};
+
 /// The MCP method a file-aware intermediary calls to obtain a download descriptor.
 pub const AUTHORIZE_DOWNLOAD_METHOD: &str = "files/authorizeDownload";
 
@@ -62,6 +66,15 @@ pub const UPLOAD_ROUTE_PREFIX: &str = "/files/upload/";
 /// larger than this is refused at authorization, before any bytes move.
 pub const MAX_UPLOAD_BYTES: usize = 64 * 1024;
 
+/// Maximum serialized envelope, including the random padding bucket.
+pub const MAX_ENVELOPE_BYTES: usize = 128 * 1024 * 1024;
+
+// JSON escaping takes at most six bytes per decoded byte. Credential outputs
+// select material from one bounded response; typed PKI/SSH material is smaller.
+// Two MiB additionally covers fixed wrappers and bounded identifiers/metadata.
+const _: () =
+    assert!(6 * infisical_api::MAXIMUM_RESPONSE_BYTES + 2 * 1024 * 1024 <= MAX_ENVELOPE_BYTES);
+
 /// Media type of every staged envelope.
 pub const ENVELOPE_MEDIA_TYPE: &str = "application/json";
 
@@ -79,6 +92,8 @@ pub enum FileError {
     BadCredential,
     /// The plane is at its staging ceiling.
     TooManyStaged { staged: usize },
+    /// Promised or retained file bytes exhaust the configured aggregate budget.
+    ByteCapacity,
     /// The declared upload size is over the per-value ceiling.
     UploadTooLarge { declared: u64 },
     /// The uploaded bytes do not match their declared size.
@@ -101,6 +116,9 @@ impl std::fmt::Display for FileError {
             Self::TooManyStaged { staged } => write!(
                 formatter,
                 "{staged} secret envelopes are already staged; download or let one expire first"
+            ),
+            Self::ByteCapacity => formatter.write_str(
+                "file transfer byte capacity is reserved; finish a transfer or let a reference expire before trying again",
             ),
             Self::UploadTooLarge { declared } => write!(
                 formatter,
@@ -127,6 +145,7 @@ impl FileError {
             Self::UnknownReference => "infisical_file_unknown_reference",
             Self::BadCredential => "infisical_file_bad_credential",
             Self::TooManyStaged { .. } => "infisical_file_too_many_staged",
+            Self::ByteCapacity => "infisical_file_byte_capacity",
             Self::UploadTooLarge { .. } => "infisical_file_upload_too_large",
             Self::SizeMismatch => "infisical_file_size_mismatch",
             Self::DigestMismatch => "infisical_file_digest_mismatch",
@@ -234,7 +253,7 @@ pub struct TransferDescriptor {
 
 /// A staged envelope and, once authorized, the terms of its one download.
 struct StagedSecret {
-    envelope: Zeroizing<Vec<u8>>,
+    envelope: TransferBytes,
     name: String,
     staged_at: Instant,
     download: Option<DownloadTicket>,
@@ -258,6 +277,46 @@ pub struct FileConfig {
     pub public_origin: String,
     pub ttl: Duration,
     pub max_staged: usize,
+    pub max_staged_bytes: usize,
+}
+
+/// A size-checked, zeroizing envelope produced by [`secret_envelope`].
+pub struct SecretEnvelope {
+    bytes: Zeroizing<Vec<u8>>,
+}
+
+impl std::ops::Deref for SecretEnvelope {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Download ownership retains the byte reservation until the transport drops it.
+pub struct TransferBytes {
+    bytes: Zeroizing<Vec<u8>>,
+    _reservation: ByteReservation,
+}
+
+impl AsRef<[u8]> for TransferBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::ops::Deref for TransferBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl std::fmt::Debug for TransferBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TransferBytes([REDACTED])")
+    }
 }
 
 /// Public delivery facts; excludes routing addresses, identifiers, and credentials.
@@ -272,6 +331,10 @@ pub(crate) struct FileCapabilities {
     ttl_seconds: f64,
     /// Combined ceiling for staged values and outstanding reservations.
     max_staged: usize,
+    /// Aggregate promised and retained buffer capacity, including downloads in flight.
+    max_staged_bytes: usize,
+    /// Maximum serialized envelope, including its random padding.
+    max_envelope_bytes: usize,
     /// Maximum bytes in a typed upload.
     max_upload_bytes: usize,
     /// References resolve only on the process that minted them.
@@ -287,13 +350,15 @@ struct UploadTicket {
     staged_id: String,
     credential_hash: [u8; 32],
     declared_size: Option<u64>,
+    promised_bytes: usize,
     declared_digest: Option<[u8; 32]>,
     created_at: Instant,
+    reservation: Option<ByteReservation>,
 }
 
 /// A completed upload, waiting to be named by a write-class tool call.
 struct ReceivedSecret {
-    bytes: Zeroizing<Vec<u8>>,
+    bytes: TransferBytes,
     staged_at: Instant,
 }
 
@@ -310,6 +375,12 @@ pub struct UploadClaim<'a> {
 }
 
 impl UploadClaim<'_> {
+    /// The promised body size; unknown-size uploads reserve the per-upload ceiling.
+    #[must_use]
+    pub fn max_bytes(&self) -> usize {
+        self.ticket.promised_bytes
+    }
+
     /// Verify the streamed bytes against the claimed terms and hold them for the
     /// tool call that names them.
     ///
@@ -322,7 +393,7 @@ impl UploadClaim<'_> {
     ///
     /// Panics if the transfer state lock is poisoned.
     pub fn complete(mut self, bytes: Zeroizing<Vec<u8>>) -> Result<(), FileError> {
-        if bytes.len() > MAX_UPLOAD_BYTES {
+        if bytes.len() > MAX_UPLOAD_BYTES || bytes.capacity() > self.ticket.promised_bytes {
             return Err(FileError::SizeMismatch);
         }
         if let Some(declared) = self.ticket.declared_size
@@ -339,10 +410,21 @@ impl UploadClaim<'_> {
         let mut state = self.plane.state.lock().expect("transfer state lock");
         state.reserved = state.reserved.saturating_sub(1);
         self.released = true;
+        let mut reservation = self
+            .ticket
+            .reservation
+            .take()
+            .expect("claimed upload reservation");
+        // The HTTP receiver preallocates the promised length; spare capacity still
+        // occupies memory after a short, unknown-length upload completes.
+        reservation.shrink(bytes.capacity());
         state.received.insert(
             std::mem::take(&mut self.ticket.staged_id),
             ReceivedSecret {
-                bytes,
+                bytes: TransferBytes {
+                    bytes,
+                    _reservation: reservation,
+                },
                 staged_at: Instant::now(),
             },
         );
@@ -377,6 +459,7 @@ struct PlaneState {
 pub struct SecretFilePlane {
     config: FileConfig,
     state: Mutex<PlaneState>,
+    byte_budget: Arc<ByteBudget>,
 }
 
 /// A promised staging slot, taken before the upstream operation runs.
@@ -389,12 +472,13 @@ pub struct SecretFilePlane {
 pub struct StageSlot<'a> {
     plane: &'a SecretFilePlane,
     consumed: bool,
+    reservation: Option<ByteReservation>,
 }
 
 impl StageSlot<'_> {
     /// Stage one envelope into this reserved slot. See [`SecretFilePlane::stage`].
     #[must_use]
-    pub fn stage(self, operation: &str, envelope: Zeroizing<Vec<u8>>) -> SecretFileReference {
+    pub fn stage(self, operation: &str, envelope: SecretEnvelope) -> SecretFileReference {
         let plane = self.plane;
         plane.stage(self, operation, envelope)
     }
@@ -431,7 +515,16 @@ struct CountingWriter(usize);
 
 impl std::io::Write for CountingWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0 += buffer.len();
+        self.0 = self
+            .0
+            .checked_add(buffer.len())
+            .filter(|size| *size <= MAX_ENVELOPE_BYTES - MIN_PAD_CHARS)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "file envelope exceeds its byte limit",
+                )
+            })?;
         Ok(buffer.len())
     }
 
@@ -467,11 +560,8 @@ pub(crate) fn zeroize_tree(value: &mut Value) {
 ///
 /// # Errors
 ///
-/// Returns an error only if the envelope cannot be serialized.
-pub fn secret_envelope(
-    operation: &str,
-    data: Value,
-) -> Result<Zeroizing<Vec<u8>>, serde_json::Error> {
+/// Returns an error if the padded envelope exceeds its byte limit or cannot be serialized.
+pub fn secret_envelope(operation: &str, data: Value) -> Result<SecretEnvelope, serde_json::Error> {
     let mut envelope = serde_json::Map::new();
     envelope.insert("operation".to_owned(), Value::String(operation.to_owned()));
     envelope.insert("data".to_owned(), data);
@@ -481,7 +571,10 @@ pub fn secret_envelope(
     // Measure with an empty pad, then size the pad to the bucket boundary. The pad is
     // ASCII hex, so the final length is exactly the base length plus the fill.
     let mut counter = CountingWriter(0);
-    serde_json::to_writer(&mut counter, &tree)?;
+    if let Err(error) = serde_json::to_writer(&mut counter, &tree) {
+        zeroize_tree(&mut tree);
+        return Err(error);
+    }
     let base = counter.0;
     let target = (base + MIN_PAD_CHARS).div_ceil(ENVELOPE_BUCKET_BYTES) * ENVELOPE_BUCKET_BYTES;
     if let Value::Object(envelope) = &mut tree {
@@ -498,7 +591,7 @@ pub fn secret_envelope(
     zeroize_tree(&mut tree);
     written?;
     debug_assert_eq!(buffer.len(), target, "the pad fills the bucket exactly");
-    Ok(buffer)
+    Ok(SecretEnvelope { bytes: buffer })
 }
 
 impl SecretFilePlane {
@@ -508,6 +601,8 @@ impl SecretFilePlane {
             version: 1,
             ttl_seconds: self.config.ttl.as_secs_f64(),
             max_staged: self.config.max_staged,
+            max_staged_bytes: self.config.max_staged_bytes,
+            max_envelope_bytes: MAX_ENVELOPE_BYTES,
             max_upload_bytes: MAX_UPLOAD_BYTES,
             instance_local: true,
             lost_on_restart: true,
@@ -517,8 +612,10 @@ impl SecretFilePlane {
 
     #[must_use]
     pub fn new(config: FileConfig) -> Arc<Self> {
+        let byte_budget = ByteBudget::new(config.max_staged_bytes);
         Arc::new(Self {
             config,
+            byte_budget,
             state: Mutex::new(PlaneState {
                 staged: HashMap::new(),
                 reserved: 0,
@@ -559,10 +656,15 @@ impl SecretFilePlane {
                 staged: outstanding,
             });
         }
+        let reservation = self
+            .byte_budget
+            .reserve(MAX_ENVELOPE_BYTES)
+            .ok_or(FileError::ByteCapacity)?;
         state.reserved += 1;
         Ok(StageSlot {
             plane: self,
             consumed: false,
+            reservation: Some(reservation),
         })
     }
 
@@ -577,7 +679,7 @@ impl SecretFilePlane {
         &self,
         mut slot: StageSlot<'_>,
         operation: &str,
-        envelope: Zeroizing<Vec<u8>>,
+        envelope: SecretEnvelope,
     ) -> SecretFileReference {
         let id = random_token();
         let name = format!("{operation}.json");
@@ -592,10 +694,15 @@ impl SecretFilePlane {
             let mut state = self.state.lock().expect("transfer state lock");
             state.reserved = state.reserved.saturating_sub(1);
             slot.consumed = true;
+            let mut reservation = slot.reservation.take().expect("reserved output bytes");
+            reservation.shrink(envelope.len());
             state.staged.insert(
                 id,
                 StagedSecret {
-                    envelope,
+                    envelope: TransferBytes {
+                        bytes: envelope.bytes,
+                        _reservation: reservation,
+                    },
                     name,
                     staged_at: Instant::now(),
                     download: None,
@@ -676,11 +783,7 @@ impl SecretFilePlane {
     /// # Panics
     ///
     /// Panics if the transfer state lock is poisoned.
-    pub fn serve(
-        &self,
-        download_id: &str,
-        credential: &str,
-    ) -> Result<Zeroizing<Vec<u8>>, FileError> {
+    pub fn serve(&self, download_id: &str, credential: &str) -> Result<TransferBytes, FileError> {
         let mut state = self.state.lock().expect("transfer state lock");
         Self::sweep_locked(&mut state, self.config.ttl);
         let key = state
@@ -757,14 +860,25 @@ impl SecretFilePlane {
                     staged: outstanding,
                 });
             }
+            let promised_bytes = match params.size {
+                Some(size) => usize::try_from(size)
+                    .map_err(|_| FileError::UploadTooLarge { declared: size })?,
+                None => MAX_UPLOAD_BYTES,
+            };
+            let reservation = self
+                .byte_budget
+                .reserve(promised_bytes)
+                .ok_or(FileError::ByteCapacity)?;
             state.uploads.insert(
                 upload_id.clone(),
                 UploadTicket {
                     staged_id: staged_id.clone(),
                     credential_hash: sha256(credential.as_bytes()),
                     declared_size: params.size,
+                    promised_bytes,
                     declared_digest,
                     created_at: Instant::now(),
+                    reservation: Some(reservation),
                 },
             );
         }
@@ -854,7 +968,7 @@ impl SecretFilePlane {
         let id = uri.strip_prefix(STAGED_URI_PREFIX)?;
         let mut state = self.state.lock().expect("transfer state lock");
         Self::sweep_locked(&mut state, self.config.ttl);
-        state.received.remove(id).map(|entry| entry.bytes)
+        state.received.remove(id).map(|entry| entry.bytes.bytes)
     }
 
     /// Drop envelopes that outlived their window, zeroizing their bytes.
@@ -938,14 +1052,222 @@ mod tests {
     use super::*;
 
     fn plane(ttl: Duration, max_staged: usize) -> Arc<SecretFilePlane> {
+        plane_with_budget(ttl, max_staged, max_staged * MAX_ENVELOPE_BYTES)
+    }
+
+    fn plane_with_budget(
+        ttl: Duration,
+        max_staged: usize,
+        max_staged_bytes: usize,
+    ) -> Arc<SecretFilePlane> {
         SecretFilePlane::new(FileConfig {
             public_origin: "http://infisical-mcp:8000".to_owned(),
             ttl,
             max_staged,
+            max_staged_bytes,
         })
     }
 
-    fn envelope(canary: &str) -> Zeroizing<Vec<u8>> {
+    #[test]
+    fn maximum_upstream_string_fits_even_with_worst_case_json_escaping() {
+        let material = "\u{0001}".repeat(infisical_api::MAXIMUM_RESPONSE_BYTES);
+        let envelope = secret_envelope(
+            "identityTokenAuth.tokens.create",
+            serde_json::json!({
+                "accessToken": material,
+            }),
+        )
+        .unwrap();
+        assert!(envelope.len() > 6 * infisical_api::MAXIMUM_RESPONSE_BYTES);
+        assert!(envelope.len() <= MAX_ENVELOPE_BYTES);
+        assert_eq!(envelope.len() % ENVELOPE_BUCKET_BYTES, 0);
+    }
+
+    #[test]
+    fn envelope_measurement_rejects_the_first_byte_above_its_limit() {
+        use std::io::Write;
+        let mut counter = CountingWriter(MAX_ENVELOPE_BYTES - MIN_PAD_CHARS - 1);
+        assert_eq!(counter.write(b"x").unwrap(), 1);
+        assert!(counter.write(b"y").is_err());
+    }
+
+    #[test]
+    fn output_bytes_are_promised_before_staging_and_released_on_cancellation() {
+        let plane = plane_with_budget(Duration::from_mins(1), 4, 2 * MAX_ENVELOPE_BYTES - 1);
+        let first = plane.reserve().unwrap();
+        assert!(matches!(plane.reserve(), Err(FileError::ByteCapacity)));
+        drop(first);
+        assert!(plane.reserve().is_ok());
+    }
+
+    #[test]
+    fn downloaded_bytes_stay_charged_until_the_transport_owner_drops() {
+        let plane = plane_with_budget(
+            Duration::from_mins(1),
+            4,
+            MAX_ENVELOPE_BYTES + ENVELOPE_BUCKET_BYTES,
+        );
+        let reference = stage(&plane, "held-in-transport");
+        let authorized = plane.authorize_download(&reference.uri).unwrap();
+        let body = plane
+            .serve(download_id_of(&authorized), credential_of(&authorized))
+            .unwrap();
+        assert_eq!(body.len(), ENVELOPE_BUCKET_BYTES);
+        assert_eq!(plane.staged_count(), 0);
+        let pending = plane.reserve().unwrap();
+        let one_byte = || AuthorizeUploadParams {
+            size: Some(1),
+            ..Default::default()
+        };
+        assert!(matches!(
+            plane.authorize_upload(one_byte()),
+            Err(FileError::ByteCapacity)
+        ));
+        assert!(!format!("{body:?}").contains("held-in-transport"));
+        drop(body);
+        assert!(plane.authorize_upload(one_byte()).is_ok());
+        drop(pending);
+    }
+
+    #[test]
+    fn claimed_upload_bytes_survive_map_removal_and_failures_release_them() {
+        let plane = plane_with_budget(Duration::from_mins(1), 4, 8);
+        let authorized = plane
+            .authorize_upload(AuthorizeUploadParams {
+                size: Some(8),
+                ..Default::default()
+            })
+            .unwrap();
+        let (id, credential) = upload_descriptor_ids(&authorized);
+        let claim = plane.claim_upload(id, credential).unwrap();
+        assert_eq!(claim.max_bytes(), 8);
+        assert!(matches!(
+            plane.authorize_upload(AuthorizeUploadParams {
+                size: Some(1),
+                ..Default::default()
+            }),
+            Err(FileError::ByteCapacity)
+        ));
+        assert!(matches!(
+            claim.complete(Zeroizing::new(vec![0; 7])),
+            Err(FileError::SizeMismatch)
+        ));
+        assert!(matches!(
+            plane.claim_upload(id, credential),
+            Err(FileError::UnknownReference)
+        ));
+        assert!(
+            plane
+                .authorize_upload(AuthorizeUploadParams {
+                    size: Some(8),
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn short_upload_keeps_its_allocated_capacity_charged_until_consumed() {
+        let plane = plane_with_budget(Duration::from_mins(1), 4, MAX_UPLOAD_BYTES);
+        let authorized = plane
+            .authorize_upload(AuthorizeUploadParams::default())
+            .unwrap();
+        let (id, credential) = upload_descriptor_ids(&authorized);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_UPLOAD_BYTES));
+        bytes.push(0);
+        plane
+            .claim_upload(id, credential)
+            .unwrap()
+            .complete(bytes)
+            .unwrap();
+        assert!(matches!(
+            plane.authorize_upload(AuthorizeUploadParams {
+                size: Some(1),
+                ..Default::default()
+            }),
+            Err(FileError::ByteCapacity)
+        ));
+        drop(plane.take_received(&authorized.file.uri).unwrap());
+        assert!(
+            plane
+                .authorize_upload(AuthorizeUploadParams::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn unknown_upload_size_reserves_the_full_ceiling_until_completion() {
+        let plane = plane_with_budget(Duration::from_mins(1), 4, MAX_UPLOAD_BYTES);
+        let authorized = plane
+            .authorize_upload(AuthorizeUploadParams::default())
+            .unwrap();
+        assert!(matches!(
+            plane.authorize_upload(AuthorizeUploadParams {
+                size: Some(1),
+                ..Default::default()
+            }),
+            Err(FileError::ByteCapacity)
+        ));
+        let (id, credential) = upload_descriptor_ids(&authorized);
+        plane
+            .claim_upload(id, credential)
+            .unwrap()
+            .complete(Zeroizing::new(vec![0; 1]))
+            .unwrap();
+        assert!(
+            plane
+                .authorize_upload(AuthorizeUploadParams {
+                    size: Some((MAX_UPLOAD_BYTES - 1) as u64),
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+        assert!(plane.take_received(&authorized.file.uri).is_some());
+        assert!(
+            plane
+                .authorize_upload(AuthorizeUploadParams {
+                    size: Some(1),
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn expiry_reclaims_uploaded_bytes_and_restart_does_not_restore_a_reference() {
+        let plane = plane_with_budget(Duration::from_mins(1), 4, 8);
+        let authorized = plane
+            .authorize_upload(AuthorizeUploadParams {
+                size: Some(8),
+                ..Default::default()
+            })
+            .unwrap();
+        let (id, credential) = upload_descriptor_ids(&authorized);
+        plane
+            .claim_upload(id, credential)
+            .unwrap()
+            .complete(Zeroizing::new(vec![0; 8]))
+            .unwrap();
+        for entry in plane.state.lock().unwrap().received.values_mut() {
+            entry.staged_at = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+        }
+        plane.sweep();
+        assert!(plane.take_received(&authorized.file.uri).is_none());
+        assert!(
+            plane
+                .authorize_upload(AuthorizeUploadParams {
+                    size: Some(8),
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+        let restarted = plane_with_budget(Duration::from_mins(1), 4, 8);
+        assert!(restarted.take_received(&authorized.file.uri).is_none());
+    }
+
+    fn envelope(canary: &str) -> SecretEnvelope {
         secret_envelope(
             "secrets.reveal",
             serde_json::json!({ "secretValue": canary }),
@@ -1114,8 +1436,7 @@ mod tests {
         let first = envelope("same-value");
         let second = envelope("same-value");
         assert_ne!(
-            first.as_slice(),
-            second.as_slice(),
+            &*first, &*second,
             "the random pad decorrelates envelope bytes from the secret value"
         );
     }

@@ -72,7 +72,7 @@ test('transport failures never replay mutations or reflect transport diagnostics
   assert.equal(f.calls[1].name, manifest.operations['secrets.create'].executor);
 });
 test('whole-result file results remain opaque and are never fetched automatically', async () => {
-  const f = fake({ structuredContent: { operation: 'projects.list', resultFile: {
+  const f = fake({ structuredContent: { operation: 'projects.list', reconciliation: [], resultFile: {
     uri: 'mcp-file://infisical/opaque-test-reference', name: 'projects.list.json', mimeType: 'application/json',
   } } });
   const result = await (await f.connect()).invokeFile('projects.list', {});
@@ -116,4 +116,16 @@ test('host composition filters and joins scoped results with explicit incomplete
   const result = await summarizeProjectEnvironments(await f.connect(), 'app-');
   assert.deepEqual(result, { projects: [{ id: 'selected', name: 'app-one', environments: ['prod'], complete: false }], complete: false });
   assert.equal(f.calls.length, 3);
+});
+
+test('file receipts use the exported Rust schema before host exposure', async () => {
+  const seen = [];
+  const f = fake({ structuredContent: { operation: 'identityTokenAuth.tokens.create',
+    resultFile: { uri: 'mcp-file://infisical/opaque', name: 'token.json', mimeType: 'application/json' },
+    reconciliation: [{ kind: 'token', id: 'token-1' }],
+  } }, (schema, value) => { seen.push(schema); return true; });
+  const result = await (await f.connect()).invokeFile('identityTokenAuth.tokens.create', { identityId: 'identity-1' });
+  assert.deepEqual(seen[1], manifest.fileResultSchema);
+  assert.deepEqual(result.value.read().reconciliation, [{ kind: 'token', id: 'token-1' }]);
+  assert.equal(f.calls.length, 2);
 });

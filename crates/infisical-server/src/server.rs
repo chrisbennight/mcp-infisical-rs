@@ -66,6 +66,7 @@ pub fn build_router(
             public_origin: file_settings.public_origin.clone(),
             ttl: file_settings.ttl,
             max_staged: file_settings.max_staged,
+            max_staged_bytes: file_settings.max_staged_bytes,
         })
     });
     let profile = if settings.identity.is_some() {
@@ -179,20 +180,22 @@ async fn receive_upload(
 
     // Streamed into pre-sized zeroizing memory: a plain full-body buffer would leave
     // an unzeroized plaintext copy behind when dropped, and a growing buffer would
-    // abandon one on reallocation. One byte past the cap is kept so an oversized
-    // transfer fails the claim's own size check and answers with the plane's bounded
-    // refusal.
-    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(MAX_UPLOAD_BYTES + 1));
+    // abandon one on reallocation. Reject excess bytes before copying them into the
+    // buffer covered by the claim's reservation.
+    let maximum = claim.max_bytes();
+    let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(maximum));
     let mut stream = body.into_data_stream();
     while let Some(frame) = stream.next().await {
         let Ok(frame) = frame else {
             return refusal(StatusCode::BAD_REQUEST, "infisical_file_transfer_failed");
         };
-        let room = (MAX_UPLOAD_BYTES + 1) - bytes.len();
-        bytes.extend_from_slice(&frame[..frame.len().min(room)]);
-        if frame.len() >= room {
-            break;
+        if frame.len() > maximum - bytes.len() {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                FileError::SizeMismatch.public_code(),
+            );
         }
+        bytes.extend_from_slice(&frame);
     }
 
     match claim.complete(bytes) {
@@ -447,6 +450,7 @@ mod tests {
                 public_origin: "http://localhost:8000".into(),
                 ttl: Duration::from_mins(1),
                 max_staged: 4,
+                max_staged_bytes: 4 * infisical_mcp::files::MAX_ENVELOPE_BYTES,
             }),
         )
         .await
