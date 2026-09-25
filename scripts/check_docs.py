@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"!?\[[^\]]*\]\((?P<target>[^)]+)\)")
 LINE_ANCHOR = re.compile(r":\d+(?:#.*)?$")
 REMOTE_SCHEMES = ("http://", "https://", "mailto:")
-IGNORED_DIRECTORIES = frozenset({".git", "target"})
+IGNORED_DIRECTORIES = frozenset({".git", "target", "node_modules", "dist"})
 
 
 def markdown_files(root: Path = ROOT) -> list[Path]:

@@ -16,3 +16,5 @@ target
 **/__pycache__
 *.pyc
 .release/
+host-client/node_modules/
+host-client/dist/

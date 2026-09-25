@@ -88,6 +88,12 @@ jobs:
       - name: Documentation validator tests
         run: python3 -m unittest discover -s scripts/tests
 
+      - name: Host client contract
+        run: |
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
+          npm ci --ignore-scripts --prefix host-client
+          npm test --prefix host-client
+
       - name: Release contract
         run: python3 scripts/check_release.py
 

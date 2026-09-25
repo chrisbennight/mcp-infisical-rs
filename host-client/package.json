@@ -1,0 +1,9 @@
+{
+  "name": "@local/infisical-mcp-host-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "build": "python3 ../scripts/generate_host_client.py && tsc -p tsconfig.json", "test": "npm run build && node --test tests/*.test.mjs" },
+  "devDependencies": { "typescript": "7.0.2" }
+}

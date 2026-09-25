@@ -10,6 +10,13 @@ The notice below reproduces the upstream license at that commit. Runtime Rust
 dependencies retain their individual licenses; the lockfile identifies their
 versions. The server's MIT license does not replace those licenses.
 
+## Host-client development tools
+
+The private host-client package uses Microsoft's TypeScript compiler under
+Apache-2.0 for development checks. Its exact version and integrity hashes are
+recorded in [the package lockfile](host-client/package-lock.json). The compiler
+is not included in the server runtime image or required by the generated client.
+
 ## Manrope font
 
 The unmodified font in `docs/branding/fonts/Manrope.ttf` is copyright 2018
