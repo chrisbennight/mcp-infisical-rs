@@ -3,9 +3,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use aws_lc_rs::{
-    signature::{ECDSA_P521_SHA512_ASN1, UnparsedPublicKey, VerificationAlgorithm},
-    unstable::signature::{ML_DSA_44, ML_DSA_65, ML_DSA_87},
+use aws_lc_rs::signature::{
+    ECDSA_P521_SHA512_ASN1, ML_DSA_44, ML_DSA_65, ML_DSA_87, UnparsedPublicKey,
+    VerificationAlgorithm,
 };
 use reqwest::Method;
 use schemars::JsonSchema;

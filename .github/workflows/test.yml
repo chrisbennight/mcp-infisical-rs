@@ -67,6 +67,27 @@ jobs:
             "${CRATES_INDEX_URL}" >> .cargo/config.toml
           echo "cargo source replacement written"
 
+      - name: Dependency advisory gate
+        run: |
+          set -euo pipefail
+          mkdir -p .security "$RUNNER_TEMP/infisical-security-tools"
+          curl -fsSL --retry 3 --output "$RUNNER_TEMP/cargo-audit.tgz" \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"
+          printf '%s  %s\n' '7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428' "$RUNNER_TEMP/cargo-audit.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-audit.tgz" --strip-components=1 \
+            -C "$RUNNER_TEMP/infisical-security-tools" \
+            cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit
+          "$RUNNER_TEMP/infisical-security-tools/cargo-audit" --version > .security/cargo-audit-version.txt
+          audit_status=0
+          "$RUNNER_TEMP/infisical-security-tools/cargo-audit" audit \
+            --db "$RUNNER_TEMP/infisical-advisory-db" --json --no-yanked \
+            > .security/cargo-audit.json || audit_status=$?
+          if [ "$audit_status" -ne 0 ] && [ "$audit_status" -ne 1 ]; then
+            exit "$audit_status"
+          fi
+          python3 scripts/check_advisories.py .security/cargo-audit.json \
+            --output .security/advisory-dispositions.json
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -148,6 +169,39 @@ jobs:
             sudo docker logs "$SMOKE_CONTAINER"
             exit 1
           fi
+
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          image-ref: ${{ env.SMOKE_IMAGE }}
+          format: json
+          output: .security/image-scan.json
+          scanners: vuln
+          list-all-pkgs: 'true'
+          ignore-unfixed: 'false'
+          exit-code: '0'
+
+      - name: Validate image evidence and produce runtime SBOM
+        run: |
+          set -euo pipefail
+          trivy --version > .security/trivy-version.txt
+          trivy convert --format cyclonedx --output .security/runtime.cdx.json .security/image-scan.json
+          image_id="$(sudo docker image inspect --format '{{.Id}}' "$SMOKE_IMAGE")"
+          python3 scripts/check_image_security.py .security/image-scan.json \
+            --image-id "$image_id" --output .security/image-dispositions.json
+
+      - name: Retain security evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .security/*.json
+            .security/*.txt
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Cleanup smoke artifacts
         if: always()

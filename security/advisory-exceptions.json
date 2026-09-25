@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "advisory": "RUSTSEC-2023-0071",
+      "aliases": ["CVE-2023-49092", "GHSA-c38w-74pg-36hr", "GHSA-4grx-2x9w-596c"],
+      "package": "rsa",
+      "version": "0.9.10",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-09-25",
+      "expires": "2026-11-24",
+      "rationale": "No patched release. The inspected service uses ssh-key RSA public signature verification and private-key parsing, pins gateway JWT verification to Ed25519, and delegates KMS private operations upstream. No local RustCrypto RSA private-decryption call was identified. Keep RSA SSH verification; reassess changes to crypto call paths or features. See docs/security-evidence.md."
+    }
+  ]
+}

@@ -18,6 +18,7 @@ a client over stdio or HTTP, and make a first project metadata call.
 | Add an upstream gateway | [Optional gateway integration](gateway-rollout.md) |
 | Restrict startup capabilities and enforce operation policy | [Operation policy](operation-policy.md) |
 | Report a vulnerability | [Security](../SECURITY.md) |
+| Review dependency and image scan evidence | [Security evidence](security-evidence.md) |
 | Change the code or documentation | [Contributing](../CONTRIBUTING.md) |
 | Prepare and verify a release | [Releases](releases.md) |
 | Use or update the project artwork | [Visual identity](branding/README.md) |

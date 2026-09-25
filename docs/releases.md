@@ -29,10 +29,12 @@ has been qualified merely by adding this workflow.
 3. The release workflow reruns the full validation workflow. Publication then
    verifies the tag, event commit, main ancestry, and declared dependency
    licenses before obtaining the registry credential.
-4. It rebuilds the validated Dockerfile for Linux/amd64, publishes version and
-   full-commit tags, and attaches build provenance and a GitHub-signed image
-   attestation. The registry digest identifies the immutable artifact; tags are
-   convenient references, not an immutability guarantee.
+4. It rebuilds the validated Dockerfile for Linux/amd64 under a unique candidate
+   tag with build provenance. It scans that candidate by digest and produces a
+   runtime SBOM. After the image gate passes, it assigns version and full-commit
+   tags to that same digest without rebuilding, verifies both tags, and attaches
+   a GitHub-signed image attestation. The registry digest identifies the immutable
+   artifact; tags are convenient references, not an immutability guarantee.
 5. Review the completed run, its image attestation, and the `release-metadata-*`
    artifact before announcing availability. Archive that metadata with the
    release notes before its 90-day Actions retention expires.
@@ -47,8 +49,11 @@ does not claim byte-for-byte reproducibility with the smoke image.
 ## Integrity and dependencies
 
 Release metadata records the source commit, version, platform, image digest,
-declared dependency licenses, and the project and upstream-documentation
-notices. `SHA256SUMS` covers those metadata files. Verify it after extraction:
+declared dependency licenses, runtime SBOM, image vulnerability scan and
+dispositions, scanner version, and the project and upstream-documentation
+notices. On successful publication, `SHA256SUMS` covers those metadata files.
+See [Security evidence](security-evidence.md) for policy and expiring exceptions.
+Verify the checksums after extraction:
 
 ```sh
 sha256sum --check SHA256SUMS
@@ -68,9 +73,9 @@ vulnerabilities.
 
 The license check compares Cargo's declared expressions with an explicitly
 reviewed list. Missing or new expressions stop publication for review. The
-inventory includes locked development and platform-specific dependencies; it
-is not a runtime SBOM, a vulnerability scan, or proof that every dependency's
-source notice has been audited. Preserve applicable dependency notices when
+license inventory includes locked development and platform-specific dependencies;
+the runtime SBOM and vulnerability report are separate artifacts. None proves
+that every dependency's source notice has been audited. Preserve applicable dependency notices when
 redistributing binaries. Do not regenerate the expression list blindly to make
 a failing check pass. The bundled endpoint documentation's pinned upstream
 notice is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
