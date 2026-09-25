@@ -1,11 +1,15 @@
 # Published catalog plan
 
+This document records the historical catalog redesign and its measurements.
+For current operation and capability counts, use the
+[generated catalog summary](generated-catalog.md). The sizes below are serialized
+JSON bytes; token usage requires the actual client's presentation and tokenizer.
+
 ## Problem
 
 The server published one tool per implemented endpoint: 217 tools covering 223
-upstream operations, serializing to roughly 934 KB. That is on the order of a
-quarter-million tokens, charged against a caller's context before its first
-message, and larger than the window most clients have.
+upstream operations, serializing to roughly 934 KB. Loading that entire payload
+made unrelated schemas part of discovery before the caller selected a task.
 
 Composition of that payload:
 
@@ -25,12 +29,12 @@ certificate-authority, and KMS schema in context.
 curation was applied when selecting which endpoints to implement, not when
 deciding what shape the published tools take. The capability registry returned
 by `server.capabilities` was evidence of the intended granularity — it describes
-this surface with roughly 155 capabilities using consolidated `.read` verbs, one
+the historical surface with roughly 155 capabilities using consolidated `.read` verbs, one
 layer above the tools that shattered those capabilities back into endpoints.
 
-The published surface is now nine tools serializing to roughly 23 KB, against a
-checked ceiling of 24,000 bytes. The phases
-below record how it got there and what remains.
+The redesign produced nine tools serializing to roughly 23 KB, against a
+checked ceiling of 24,000 bytes. The phases below record that design and its
+proposed follow-on work; they are not a current delivery-status ledger.
 
 ## Direction
 
@@ -136,7 +140,7 @@ than promoting none.
 
 ### 5. Workflow tools
 
-The layered surface reduces token cost and selection difficulty but not
+The layered surface reduces initial schema bytes and selection difficulty but not
 chaining. Workflows that today require an operator to sequence several calls get
 a single tool that orchestrates them server-side, bypassing no preflight and
 occupying one risk tier. Where a workflow performs several upstream mutations,
