@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use crate::files::SecretFilePlane;
 
+mod discovery;
 pub mod files;
 pub mod runtime;
 mod tools;

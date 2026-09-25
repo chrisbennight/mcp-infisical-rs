@@ -835,6 +835,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_discovery_and_input_only_schemas_work_on_the_wire() {
+        let (router, key, upstream) = test_router().await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        let found = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            2,
+            "operations.list",
+            json!({"query": "rotate database password", "limit": 1}),
+        )
+        .await;
+        assert_eq!(
+            found["result"]["structuredContent"]["operations"][0]["name"],
+            "secretRotations.sql.rotate"
+        );
+        let page = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            3,
+            "operations.list",
+            json!({"namePrefix": "secrets.", "limit": 1}),
+        )
+        .await;
+        assert_eq!(
+            page["result"]["structuredContent"]["operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(page["result"]["structuredContent"]["nextOffset"], 1);
+        let described = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            4,
+            "operations.describe",
+            json!({"operation": "projects.list", "includeOutputSchema": false}),
+        )
+        .await;
+        let output = &described["result"]["structuredContent"];
+        assert!(output["inputSchema"].is_object());
+        assert!(output.get("outputSchema").is_none());
+        let invalid = call_authenticated_tool(
+            router,
+            &identity,
+            5,
+            "operations.list",
+            json!({"namePrefix": "wire-discovery-canary".repeat(4)}),
+        )
+        .await;
+        assert_eq!(invalid["error"]["code"], -32602);
+        assert!(!invalid.to_string().contains("wire-discovery-canary"));
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/jwks");
+    }
+
+    #[tokio::test]
     async fn gateway_discovery_reports_effective_limits_and_file_requirements() {
         for files_enabled in [false, true] {
             let (router, key, upstream) = if files_enabled {
