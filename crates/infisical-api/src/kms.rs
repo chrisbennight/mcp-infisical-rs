@@ -1,10 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::{StreamExt, stream};
 use reqwest::Method;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
+
+#[cfg(test)]
+mod preflight_tests;
 
 use crate::{
     InfisicalClient, MutationOperation, ObservableReadOperation, Page, PageRequest, ProjectId,
@@ -30,6 +34,7 @@ const MAX_KMS_SEARCH_BYTES: usize = 256;
 const KMS_IMPORT_REJECTION_MESSAGE: &str = "Infisical rejected this key import";
 /// Maximum keys accepted by one import or private-key export request.
 pub const MAX_KMS_BULK_KEYS: usize = 100;
+const MAX_CONCURRENT_KMS_PREFLIGHTS: usize = 8;
 
 /// Input validation failures for the closed KMS contract.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -1494,11 +1499,54 @@ impl InfisicalClient {
         })
     }
 
-    /// Reveal private material for a bounded set of exact project keys.
+    async fn preflight_bulk_kms_keys(
+        &self,
+        project_id: &ProjectId,
+        key_ids: &[KmsKeyId],
+    ) -> Result<HashMap<String, KmsKey>, ResourceError> {
+        let deadline = tokio::time::Instant::now() + self.preflight_timeout();
+        let mut observed = HashMap::new();
+        // Each concurrent future owns its identifier rather than borrowing the iterator.
+        let mut preflights = stream::iter(key_ids.to_vec())
+            .map(|key_id| async move {
+                self.preflight_active_kms_key(project_id, &key_id, None)
+                    .await
+            })
+            .buffer_unordered(MAX_CONCURRENT_KMS_PREFLIGHTS);
+        loop {
+            let next = tokio::time::timeout_at(deadline, preflights.next())
+                .await
+                .map_err(|_| ResourceError::KmsBulkPreflightTimeout {
+                    validated: observed.len(),
+                    requested: key_ids.len(),
+                })?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ResourceError::KmsBulkPreflightTimeout {
+                    validated: observed.len(),
+                    requested: key_ids.len(),
+                });
+            }
+            let Some(result) = next else { break };
+            let key = result.map_err(|source| ResourceError::KmsBulkPreflightFailed {
+                validated: observed.len(),
+                requested: key_ids.len(),
+                source: Box::new(source),
+            })?;
+            observed.insert(key.id.clone(), key);
+        }
+        Ok(observed)
+    }
+
+    /// Reveal private material for exact project keys, returning the caller's order.
+    ///
+    /// Independent preflight reads use bounded concurrency and a shared total
+    /// deadline. Every key must validate before the final bulk request is sent.
     ///
     /// # Errors
     ///
-    /// Returns a confirmation, duplicate, scope, typed client, or response error.
+    /// Returns a confirmation, duplicate, partial-preflight, typed client, or
+    /// response error. A partial-preflight error means the bulk request was not
+    /// sent; completed and cancelled reads may have created upstream access events.
     pub async fn bulk_reveal_kms_private_keys(
         &self,
         project_id: &ProjectId,
@@ -1509,14 +1557,12 @@ impl InfisicalClient {
             return Err(ResourceError::KmsSecretRevealNotConfirmed);
         }
         validate_bulk_key_ids(&key_ids).map_err(|_| ResourceError::InvalidKmsBulkRequest)?;
-        let mut observed = std::collections::HashMap::new();
-        for key_id in &key_ids {
-            let key = self
-                .preflight_active_kms_key(project_id, key_id, None)
-                .await?;
-            observed.insert(key.id.clone(), key);
-        }
-        let expected = key_ids.iter().map(KmsKeyId::as_str).collect::<HashSet<_>>();
+        let observed = self.preflight_bulk_kms_keys(project_id, &key_ids).await?;
+        let expected = key_ids
+            .iter()
+            .enumerate()
+            .map(|(index, key_id)| (key_id.as_str(), index))
+            .collect::<HashMap<_, _>>();
         let response = self
             .execute_mutation::<BulkPrivateKeyReveal>(&BulkPrivateKeyRequest {
                 key_ids: key_ids
@@ -1529,7 +1575,7 @@ impl InfisicalClient {
             return Err(ResourceError::InvalidKmsResponse);
         }
         let mut seen = HashSet::new();
-        response
+        let mut validated = response
             .keys
             .into_iter()
             .map(|key| {
@@ -1540,8 +1586,10 @@ impl InfisicalClient {
                 let Some(preflight) = observed.get(key_id.as_str()) else {
                     return Err(ResourceError::InvalidKmsResponse);
                 };
-                if !expected.contains(key_id.as_str())
-                    || !seen.insert(key_id.as_str().to_owned())
+                let Some(&index) = expected.get(key_id.as_str()) else {
+                    return Err(ResourceError::InvalidKmsResponse);
+                };
+                if !seen.insert(key_id.as_str().to_owned())
                     || key.algorithm.usage() != key.key_usage
                     || name.as_str() != preflight.name
                     || key.key_usage != preflight.key_usage
@@ -1559,16 +1607,21 @@ impl InfisicalClient {
                     validate_base64(public_key, MAX_KMS_PUBLIC_KEY_BYTES, false)
                         .map_err(|_| ResourceError::InvalidKmsResponse)?;
                 }
-                Ok(KmsBulkPrivateKey {
-                    key_id: key_id.as_str().to_owned(),
-                    name: name.as_str().to_owned(),
-                    key_usage: key.key_usage,
-                    algorithm: key.algorithm,
-                    private_key: key.private_key.0,
-                    public_key: key.public_key,
-                })
+                Ok((
+                    index,
+                    KmsBulkPrivateKey {
+                        key_id: key_id.as_str().to_owned(),
+                        name: name.as_str().to_owned(),
+                        key_usage: key.key_usage,
+                        algorithm: key.algorithm,
+                        private_key: key.private_key.0,
+                        public_key: key.public_key,
+                    },
+                ))
             })
-            .collect()
+            .collect::<Result<Vec<_>, ResourceError>>()?;
+        validated.sort_unstable_by_key(|(index, _)| *index);
+        Ok(validated.into_iter().map(|(_, key)| key).collect())
     }
 
     /// List signing algorithms for one exact asymmetric KMS key.

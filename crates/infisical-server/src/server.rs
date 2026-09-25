@@ -1052,6 +1052,7 @@ mod tests {
             assert_eq!(runtime["limits"]["maxRequestBytes"], 16 * 1024);
             assert_eq!(runtime["limits"]["maxConcurrentRequests"], 4);
             assert_eq!(runtime["limits"]["requestTimeoutSeconds"], 5.0);
+            assert_eq!(runtime["limits"]["upstreamMaxConcurrentRequests"], 32);
             assert_eq!(runtime["delivery"]["uploadReferences"], files_enabled);
             if files_enabled {
                 assert_eq!(runtime["delivery"]["defaultSecretDelivery"], "reference");
@@ -1293,6 +1294,51 @@ mod tests {
         assert_eq!(body["result"]["structuredContent"]["total"], 1);
         assert_eq!(body["result"]["isError"], false);
         assert_eq!(upstream_server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn failed_kms_bulk_preflight_reports_access_events_without_exporting_keys() {
+        let (router, signing_key, upstream) = test_router().await;
+        let project_id = "11111111-1111-4111-8111-111111111111";
+        let key_ids = [
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+        ];
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/universal-auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "kms-wire-test-token", "expiresIn": 300,
+                "accessTokenMaxTTL": 600, "tokenType": "Bearer"
+            })))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        for (index, id) in key_ids.iter().enumerate() {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v1/kms/keys/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"key": {
+                    "id": id, "name": "application-key", "description": "test key", "isDisabled": index == 1,
+                    "orgId": "44444444-4444-4444-8444-444444444444", "projectId": project_id,
+                    "keyUsage": "encrypt-decrypt", "encryptionAlgorithm": "aes-256-gcm", "version": 1,
+                    "createdAt": "2026-07-20T01:02:03.000Z", "updatedAt": "2026-07-20T01:02:03.000Z"
+                }}))).mount(&upstream).await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/api/v1/kms/keys/bulk-export-private-keys"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("private-key-wire-canary"))
+            .expect(0)
+            .mount(&upstream)
+            .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&signing_key, AUDIENCE, now, now + 60);
+        let response = call_authenticated_tool(router, &identity, 29, "kms.keys.privateKeys.bulkReveal",
+            json!({"projectId": project_id, "keyIds": key_ids, "confirmReveal": true, "delivery": "inlineValue"})).await;
+        assert_eq!(response["result"]["isError"], true);
+        let encoded = response.to_string();
+        assert!(encoded.contains("access events"));
+        assert!(encoded.contains("bulk private-key request was not sent"));
+        assert!(!encoded.contains("private-key-wire-canary"));
+        assert!(!encoded.contains("kms-wire-test-token"));
     }
 
     #[tokio::test]

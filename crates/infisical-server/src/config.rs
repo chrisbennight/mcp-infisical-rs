@@ -230,6 +230,12 @@ fn infisical_from_env() -> Result<InfisicalClient, SettingsError> {
         false,
     )?;
     settings.organization_slug = optional("INFISICAL_UNIVERSAL_AUTH_ORGANIZATION_SLUG");
+    settings.max_concurrent_requests = parse_number(
+        "INFISICAL_API_MAX_CONCURRENT_REQUESTS",
+        settings.max_concurrent_requests,
+        1,
+        256,
+    )?;
     Ok(InfisicalClient::new(settings)?)
 }
 

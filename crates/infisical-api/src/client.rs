@@ -7,7 +7,7 @@ use reqwest::{Method, RequestBuilder, StatusCode, dns::Resolve, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::{
-    sync::{Mutex, watch},
+    sync::{Mutex, Semaphore, watch},
     time::Instant,
 };
 use url::Url;
@@ -23,6 +23,8 @@ const MAXIMUM_REQUEST_TIMEOUT: Duration = Duration::from_mins(2);
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TOKEN_REFRESH_SKEW: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 32;
+const MAXIMUM_CONCURRENT_REQUESTS: usize = 256;
 const AUTH_FAILURE_COOLDOWN: Duration = Duration::from_secs(5);
 const AUTH_REJECTION_COOLDOWN: Duration = Duration::from_secs(30);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
@@ -37,6 +39,8 @@ pub struct ClientSettings {
     /// Permit cleartext HTTP only for explicitly private network authorities.
     pub allow_private_http: bool,
     pub request_timeout: Duration,
+    /// Shared in-flight HTTP request limit across every clone, including login.
+    pub max_concurrent_requests: usize,
     pub max_response_bytes: usize,
     pub token_refresh_skew: Duration,
 }
@@ -52,6 +56,7 @@ impl ClientSettings {
             organization_slug: None,
             allow_private_http: false,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             token_refresh_skew: DEFAULT_TOKEN_REFRESH_SKEW,
         }
@@ -69,6 +74,7 @@ struct ClientInner {
     http: reqwest::Client,
     token: tokio::sync::RwLock<Option<Arc<CachedToken>>>,
     refresh: Mutex<RefreshCoordinator>,
+    request_slots: Semaphore,
 }
 
 type RefreshOutcome = Result<Arc<CachedToken>, ClientError>;
@@ -269,6 +275,7 @@ impl InfisicalClient {
             .map_err(|_| ClientConfigError::HttpClient)?;
         Ok(Self {
             inner: Arc::new(ClientInner {
+                request_slots: Semaphore::new(settings.max_concurrent_requests),
                 settings,
                 http,
                 token: tokio::sync::RwLock::new(None),
@@ -278,6 +285,16 @@ impl InfisicalClient {
                 }),
             }),
         })
+    }
+
+    /// Maximum simultaneous upstream HTTP requests, shared by every client clone.
+    #[must_use]
+    pub fn max_concurrent_requests(&self) -> usize {
+        self.inner.settings.max_concurrent_requests
+    }
+
+    pub(crate) fn preflight_timeout(&self) -> Duration {
+        self.inner.settings.request_timeout
     }
 
     /// Execute a crate-declared idempotent read, refreshing authentication and
@@ -625,7 +642,17 @@ impl InfisicalClient {
     where
         T: DeserializeOwned,
     {
+        let deadline = Instant::now() + self.inner.settings.request_timeout;
+        let _permit = tokio::time::timeout_at(deadline, self.inner.request_slots.acquire())
+            .await
+            .map_err(|_| ClientError::WorkBudgetExhausted)?
+            .expect("the private request semaphore is never closed");
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(ClientError::WorkBudgetExhausted)?;
         let mut response = request
+            .timeout(remaining)
             .send()
             .await
             .map_err(|error| map_transport_error(&error))?;
@@ -739,6 +766,8 @@ fn validate_settings(settings: &ClientSettings) -> Result<ResolutionPolicy, Clie
         || settings.request_timeout > MAXIMUM_REQUEST_TIMEOUT
         || settings.max_response_bytes == 0
         || settings.max_response_bytes > MAXIMUM_RESPONSE_BYTES
+        || settings.max_concurrent_requests == 0
+        || settings.max_concurrent_requests > MAXIMUM_CONCURRENT_REQUESTS
         || settings.token_refresh_skew.is_zero()
     {
         return Err(ClientConfigError::InvalidBounds);
@@ -797,7 +826,7 @@ pub enum ClientConfigError {
         "Universal Auth organization slug must contain 1 to 64 lowercase letters, numbers, or hyphen-separated segments"
     )]
     InvalidOrganizationSlug,
-    #[error("Infisical client timing or response-size bounds are invalid")]
+    #[error("Infisical client timing, concurrency, or response-size bounds are invalid")]
     InvalidBounds,
     #[error("failed to construct the bounded Infisical HTTP client")]
     HttpClient,
@@ -805,6 +834,10 @@ pub enum ClientConfigError {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ClientError {
+    #[error(
+        "Infisical request concurrency budget was busy until the request deadline; this HTTP request was not sent"
+    )]
+    WorkBudgetExhausted,
     #[error("Infisical transport failed: {0}")]
     Transport(TransportErrorKind),
     #[error("Infisical response exceeded the {limit}-byte limit")]
@@ -1101,6 +1134,52 @@ mod tests {
     #[derive(Serialize)]
     struct TestMutation {
         value: String,
+    }
+
+    #[tokio::test]
+    async fn shared_budget_timeout_precedes_mutation_and_releases_capacity_for_recovery() {
+        let server = MockServer::start().await;
+        mount_login(&server, "budget-test-token").await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/test/mutate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": "done"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut settings = settings(&server);
+        settings.max_concurrent_requests = 1;
+        settings.request_timeout = Duration::from_millis(200);
+        let client = InfisicalClient::new(settings).unwrap();
+        client.access_token().await.unwrap();
+        let held = client.inner.request_slots.acquire().await.unwrap();
+        let other = client.clone();
+        let body = TestMutation {
+            value: "changed".into(),
+        };
+        assert_eq!(
+            other
+                .execute_mutation::<TestMutationOperation>(&body)
+                .await
+                .unwrap_err(),
+            ClientError::WorkBudgetExhausted
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != "/api/v1/test/mutate")
+        );
+        drop(held);
+        assert_eq!(
+            other
+                .execute_mutation::<TestMutationOperation>(&body)
+                .await
+                .unwrap()
+                .value,
+            "done"
+        );
     }
 
     #[tokio::test]
@@ -2140,12 +2219,18 @@ mod tests {
         excessive_response.max_response_bytes = 16 * 1024 * 1024 + 1;
         let mut zero_skew = bounded_settings();
         zero_skew.token_refresh_skew = Duration::ZERO;
+        let mut zero_concurrency = bounded_settings();
+        zero_concurrency.max_concurrent_requests = 0;
+        let mut excessive_concurrency = bounded_settings();
+        excessive_concurrency.max_concurrent_requests = 257;
         for invalid_bounds in [
             zero_timeout,
             excessive_timeout,
             zero_response,
             excessive_response,
             zero_skew,
+            zero_concurrency,
+            excessive_concurrency,
         ] {
             assert_eq!(
                 InfisicalClient::new(invalid_bounds)

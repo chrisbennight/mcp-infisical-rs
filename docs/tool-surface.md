@@ -118,6 +118,11 @@ requirements and whether this deployment satisfies them. None of these local
 tools probes upstream permissions or license entitlements. Cache schemas by build
 version and schema revision; do not cache deployment readiness across instances.
 
+`runtime.limits.upstreamMaxConcurrentRequests` reports the shared upstream HTTP
+request limit, including authentication. It is separate from the HTTP ingress
+limit and also applies to stdio. Each upstream request's timeout includes its
+wait for capacity; a separate login request has its own timeout budget.
+
 The service-owned `io.cacahuate.infisical.file-transfer` extension is version 1.
 An enabled instance advertises upload limits, staging capacity, expiry, and
 instance-local storage. A transfer permits at most one redemption attempt and
@@ -400,6 +405,20 @@ plaintext or private material is held in redacting types and serialized only by
 manifest classifies high risk, and each is a recorded or mutating call because
 audited GETs create an upstream audit event and
 all other KMS routes are mutations.
+
+Bulk private-key reveal checks at most eight keys concurrently and shares the
+client's upstream HTTP budget across requests and client clones. All preflights
+must finish within one upstream timeout (10 seconds with the standard settings),
+including authentication and capacity waits. Every key must pass scope and
+availability checks before the single bulk export request. Returned keys follow
+the requested order even if Infisical returns a different order.
+
+A preflight failure or deadline reports the number of validated keys and states
+that the bulk export request was not sent. Other reads may already have reached
+Infisical and created access events, including reads cancelled after another
+failure. The validated count is not a count of upstream audit events. Parallel
+preflight failures can therefore record more accesses than sequential fail-fast
+execution. Writes and the final bulk export are never automatically replayed.
 
 ## Certificate-authority inventory and internal lifecycle
 
