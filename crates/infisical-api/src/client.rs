@@ -218,6 +218,18 @@ pub trait MutationOperation: sealed::Sealed {
 }
 
 impl InfisicalClient {
+    /// Effective response body ceiling, safe to publish in discovery.
+    #[must_use]
+    pub fn max_response_bytes(&self) -> usize {
+        self.inner.settings.max_response_bytes
+    }
+
+    /// Effective timeout for each upstream request, safe to publish in discovery.
+    #[must_use]
+    pub fn request_timeout(&self) -> Duration {
+        self.inner.settings.request_timeout
+    }
+
     /// Build a redirect-free client that ignores ambient proxy configuration.
     ///
     /// # Errors

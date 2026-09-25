@@ -125,10 +125,20 @@ ordinary MCP clients are not assumed to support it. Stdio rejects
 file delivery to inline secrets. Use HTTP when you need this extension.
 
 `certificates.import` accepts file references only, so it requires this HTTP
-extension and is unavailable over stdio. The shared catalog still lists it.
+extension and is unavailable over stdio. The shared catalog still lists it;
+`operations.describe` reports `availability.requiresFileTransfer: true` and
+`availability.enabledHere: false` before execution on an instance without files.
 Secret create/update operations also accept ordinary inline inputs and work
 without the extension. Stateless HTTP means no MCP sessions; an enabled file
 extension still keeps temporary, instance-local transfer state.
+
+Use `server.info` to identify the active transport, HTTP profile where applicable,
+build version, and discovery schema revision. `server.capabilities.runtime`
+reports effective ingress and upstream limits, supported secret and whole-result
+delivery modes, and the configured file expiry and staging ceiling. It omits
+credentials, routing addresses, and limits that the transport does not enforce.
+Discovery makes no upstream permission or license probe: `upstreamAccess` is
+`notProbed`, and the compiled capability list is not a live entitlement check.
 
 For the existing signed-identity integration, use
 `--http-profile gateway` (also the default HTTP profile) and configure its bearer,

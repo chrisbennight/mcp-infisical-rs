@@ -17,6 +17,7 @@ use serde::Deserialize;
 use crate::files::SecretFilePlane;
 
 pub mod files;
+pub mod runtime;
 mod tools;
 
 static TOOL_CATALOG: OnceLock<ListToolsResult> = OnceLock::new();
@@ -38,6 +39,7 @@ pub const MCP_INSTRUCTIONS: &str = "Manage Infisical through typed, bounded oper
 pub struct InfisicalMcp {
     client: InfisicalClient,
     files: Option<Arc<SecretFilePlane>>,
+    runtime: runtime::RuntimeSettings,
 }
 
 impl InfisicalMcp {
@@ -47,7 +49,15 @@ impl InfisicalMcp {
         Self {
             client,
             files: None,
+            runtime: runtime::RuntimeSettings::default(),
         }
+    }
+
+    /// Declare immutable transport facts for discovery.
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: runtime::RuntimeSettings) -> Self {
+        self.runtime = runtime;
+        self
     }
 
     /// Attach the reveal transfer plane, enabling reference delivery by default.
@@ -75,10 +85,10 @@ pub fn executor_for_operation(operation: &str) -> Option<&'static str> {
     tools::tool_tier(operation).map(tools::ToolTier::executor)
 }
 
-/// Serialize the exact registry returned by the `server.capabilities` MCP tool.
+/// Serialize the compiled registry without deployment-specific runtime facts.
 ///
 /// This is used by offline contract validation so registry evidence follows the
-/// executable response path instead of source-text inspection.
+/// executable registry instead of source-text inspection.
 ///
 /// # Errors
 ///
@@ -111,7 +121,8 @@ impl ServerHandler for InfisicalMcp {
         params: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        tools::dispatch(&self.client, self.files.as_deref(), params).await
+        tools::dispatch_with_runtime(&self.client, self.files.as_deref(), &self.runtime, params)
+            .await
     }
 
     fn on_custom_request(
@@ -5229,7 +5240,19 @@ mod tests {
 
         assert_eq!(properties["name"]["const"], MCP_SERVER_NAME);
         assert_eq!(properties["protocolVersion"]["const"], MCP_PROTOCOL_VERSION);
-        assert_eq!(properties["transport"]["const"], "streamable-http");
+        let schema = serde_json::to_value(output_schema).unwrap();
+        for transport in ["embedded", "stdio", "streamable-http"] {
+            assert!(jsonschema::is_valid(
+                &schema,
+                &json!({
+                    "name": MCP_SERVER_NAME,
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "version": "0.1.0",
+                    "transport": transport,
+                    "schemaRevision": crate::runtime::SCHEMA_REVISION
+                })
+            ));
+        }
         assert!(properties.values().all(|property| {
             property["description"]
                 .as_str()
@@ -7591,7 +7614,7 @@ mod tests {
 
         assert_eq!(structured["name"], MCP_SERVER_NAME);
         assert_eq!(structured["protocolVersion"], MCP_PROTOCOL_VERSION);
-        assert_eq!(structured["transport"], "streamable-http");
+        assert_eq!(structured["transport"], "embedded");
         assert_eq!(result.is_error, Some(false));
 
         let mut unexpected = Map::new();
@@ -7603,7 +7626,7 @@ mod tests {
                 .is_err()
         );
 
-        let capabilities = tools::dispatch_tool(
+        let mut capabilities = tools::dispatch_tool(
             &mcp.client,
             None,
             CallToolRequestParams::new("server.capabilities"),
@@ -7613,6 +7636,8 @@ mod tests {
         .structured_content
         .unwrap();
         assert_discovery_capabilities(&capabilities);
+        assert_eq!(capabilities["runtime"]["upstreamAccess"], "notProbed");
+        capabilities.as_object_mut().unwrap().remove("runtime");
         assert_eq!(
             capabilities,
             super::server_capabilities_payload().expect("serialize capability registry")
