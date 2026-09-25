@@ -15,6 +15,14 @@ the evidence validator fails if either inventory is absent. CI converts the
 same complete scan into a CycloneDX runtime SBOM. This does not rely on scanning
 the source lockfile as a substitute for inspecting the executable.
 
+The image report must be at most 24 hours old. The gate also requires database
+metadata from the same explicit scanner cache: its update must be within 48
+hours, precede the scan, and not have reached its next scheduled update. Missing,
+future, stale, or inconsistent timestamps fail validation. Both report and metadata
+must identify the pinned scanner version. Evidence preserves the actual scan time
+separately from validation time and retains the database timestamps; revalidating
+an old report cannot make it a fresh scan.
+
 Image findings with high, critical, or unknown severity block unless an exact
 exception applies. Low and medium findings remain in the retained evidence with
 an explicit review disposition. The separate RustSec gate still blocks Rust

@@ -185,6 +185,7 @@ def validate_build_workflow(text: str) -> list[str]:
         )),
         ("Scan exact release candidate", (
             "          image-ref: ${{ env.IMAGE }}@${{ steps.image.outputs.digest }}",
+            "          cache-dir: .cache/trivy",
             "          list-all-pkgs: 'true'", "          ignore-unfixed: 'false'",
         )),
         ("Attest published image", ("          subject-digest: ${{ steps.image.outputs.digest }}", "          push-to-registry: true")),
@@ -199,6 +200,8 @@ def validate_build_workflow(text: str) -> list[str]:
             if not re.search(r"@[0-9a-f]{40}(?: |$)", line):
                 errors.append("release actions must be pinned to full commits")
     _require_step(errors, publish or "", "Qualify release image and produce runtime SBOM", (
+        'trivy --cache-dir .cache/trivy version --format json > .release/trivy-metadata.json',
+        '--scanner-metadata .release/trivy-metadata.json \\',
         'trivy convert --format cyclonedx --output .release/runtime.cdx.json .release/image-scan.json',
         '--digest "$IMAGE_DIGEST" --output .release/image-dispositions.json',
     ))
@@ -299,10 +302,13 @@ def validate_github_test_workflow(text: str) -> list[str]:
     ))
     scan = _require_step(errors, test or "", "Scan runtime image")
     for line in ("          scanners: vuln", "          list-all-pkgs: 'true'",
+                 "          cache-dir: .cache/trivy",
                  "          ignore-unfixed: 'false'", "          image-ref: ${{ env.SMOKE_IMAGE }}"):
         if not _has_yaml_line(scan, line):
             errors.append(f"runtime image scan is missing: {line.strip()}")
     _require_step(errors, test or "", "Validate image evidence and produce runtime SBOM", (
+        'trivy --cache-dir .cache/trivy version --format json > .security/trivy-metadata.json',
+        '--scanner-metadata .security/trivy-metadata.json \\',
         'trivy convert --format cyclonedx --output .security/runtime.cdx.json .security/image-scan.json',
         '--image-id "$image_id" --output .security/image-dispositions.json',
     ))

@@ -66,6 +66,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.70.0
+          cache-dir: .cache/trivy
           image-ref: ${{ env.IMAGE }}@${{ steps.image.outputs.digest }}
           format: json
           output: .release/image-scan.json
@@ -80,8 +81,10 @@ jobs:
         run: |
           set -euo pipefail
           trivy --version > .release/trivy-version.txt
+          trivy --cache-dir .cache/trivy version --format json > .release/trivy-metadata.json
           trivy convert --format cyclonedx --output .release/runtime.cdx.json .release/image-scan.json
           python3 scripts/check_image_security.py .release/image-scan.json \
+            --scanner-metadata .release/trivy-metadata.json \
             --digest "$IMAGE_DIGEST" --output .release/image-dispositions.json
 
       - name: Promote qualified image without rebuilding

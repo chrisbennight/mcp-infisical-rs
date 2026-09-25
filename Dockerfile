@@ -5,6 +5,10 @@ ARG RUST_VERSION=1.96.1
 FROM rust:${RUST_VERSION}-slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS builder
 WORKDIR /build
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Embed the linked Rust dependency inventory so the runtime binary can be scanned.
 ADD --checksum=sha256:42b66c852fbb9074a9ca356279a92eb753f48dde16017b8c82f48dcd05d6c856 \
     https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.6/cargo-auditable-x86_64-unknown-linux-musl.tar.xz /tmp/cargo-auditable.tar.xz

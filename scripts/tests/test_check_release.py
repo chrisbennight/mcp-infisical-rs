@@ -12,6 +12,21 @@ SPEC.loader.exec_module(CHECK_RELEASE)
 
 
 class TestReleaseContract(unittest.TestCase):
+    def test_image_freshness_evidence_uses_the_scan_cache(self) -> None:
+        for path, validate, directory in (
+            (CHECK_RELEASE.GITHUB_TEST_WORKFLOW, CHECK_RELEASE.validate_github_test_workflow, ".security"),
+            (CHECK_RELEASE.BUILD_WORKFLOW, CHECK_RELEASE.validate_build_workflow, ".release"),
+        ):
+            workflow = path.read_text(encoding="utf-8")
+            for marker in (
+                "          cache-dir: .cache/trivy",
+                f"          trivy --cache-dir .cache/trivy version --format json > {directory}/trivy-metadata.json",
+                f"            --scanner-metadata {directory}/trivy-metadata.json",
+            ):
+                with self.subTest(path=path, marker=marker):
+                    self.assertIn(marker, workflow)
+                    self.assertTrue(validate(workflow.replace(marker, "")))
+
     def test_github_checks_preserve_validation_and_runtime_hardening(self) -> None:
         workflow = CHECK_RELEASE.GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(CHECK_RELEASE.validate_github_test_workflow(workflow), [])

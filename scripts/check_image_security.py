@@ -12,14 +12,45 @@ from pathlib import Path
 
 from check_advisories import ROOT, validate_exceptions
 
+MAX_SCAN_AGE = dt.timedelta(hours=24)
+MAX_DATABASE_AGE = dt.timedelta(hours=48)
+CLOCK_SKEW = dt.timedelta(minutes=5)
 
-def assess(report: dict, policy: dict, now: dt.datetime, image_id: str | None, digest: str | None) -> dict:
+
+def timestamp(value: object) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ValueError("scan timestamps must be timezone-aware strings")
+    parsed = dt.datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("scan timestamps must include a timezone")
+    return parsed
+
+
+def assess(report: dict, policy: dict, now: dt.datetime, image_id: str | None, digest: str | None,
+           scanner: dict) -> dict:
     exceptions = validate_exceptions(policy, now.date())
     identity = image_id or digest
     if bool(image_id) == bool(digest) or not re.fullmatch(r"sha256:[0-9a-f]{64}", identity or ""):
         raise ValueError("one exact image ID or published digest is required")
     if report["SchemaVersion"] != 2 or report["ArtifactType"] != "container_image":
         raise ValueError("expected a Trivy container image report")
+    scanned = timestamp(report["CreatedAt"])
+    if not -CLOCK_SKEW <= now - scanned <= MAX_SCAN_AGE:
+        raise ValueError("image scan must be current within 24 hours")
+    if scanner["Version"] != "0.70.0" or report["Trivy"]["Version"] != scanner["Version"]:
+        raise ValueError("report and database metadata must use the pinned Trivy version")
+    database = scanner["VulnerabilityDB"]
+    if database["Version"] != 2:
+        raise ValueError("unsupported vulnerability database schema")
+    updated = timestamp(database["UpdatedAt"])
+    downloaded = timestamp(database["DownloadedAt"])
+    next_update = timestamp(database["NextUpdate"])
+    if not -CLOCK_SKEW <= now - updated <= MAX_DATABASE_AGE:
+        raise ValueError("image vulnerability database must be current within 48 hours")
+    if updated > downloaded + CLOCK_SKEW or downloaded > scanned + CLOCK_SKEW:
+        raise ValueError("database metadata must precede the recorded scan")
+    if next_update <= updated or next_update < max(now, scanned):
+        raise ValueError("vulnerability database update is due; scan again with a current database")
     metadata = report["Metadata"]
     if image_id and metadata["ImageID"] != image_id:
         raise ValueError("scan does not match the built image ID")
@@ -51,7 +82,10 @@ def assess(report: dict, policy: dict, now: dt.datetime, image_id: str | None, d
     return {
         "passed": all(item["disposition"] != "blocked" for item in dispositions),
         "imageId": metadata["ImageID"], "publishedDigest": digest,
-        "scannedAt": now.isoformat(), "dispositions": dispositions,
+        "scannedAt": scanned.isoformat(), "validatedAt": now.isoformat(),
+        "scannerVersion": scanner["Version"],
+        "database": {key: database[key] for key in ("Version", "UpdatedAt", "DownloadedAt", "NextUpdate")},
+        "dispositions": dispositions,
         "policy": "High, critical, and unclassified image findings block unless explicitly excepted; lower severities remain in evidence. The separate RustSec gate covers all Rust advisory severities.",
     }
 
@@ -60,6 +94,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
     parser.add_argument("--policy", type=Path, default=ROOT / "security" / "advisory-exceptions.json")
+    parser.add_argument("--scanner-metadata", type=Path, required=True)
     identity = parser.add_mutually_exclusive_group(required=True)
     identity.add_argument("--image-id")
     identity.add_argument("--digest")
@@ -67,7 +102,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = assess(json.loads(args.report.read_text()), json.loads(args.policy.read_text()),
-                        dt.datetime.now(dt.timezone.utc), args.image_id, args.digest)
+                        dt.datetime.now(dt.timezone.utc), args.image_id, args.digest,
+                        json.loads(args.scanner_metadata.read_text()))
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"image gate: invalid evidence: {error}", file=sys.stderr)
         return 2
