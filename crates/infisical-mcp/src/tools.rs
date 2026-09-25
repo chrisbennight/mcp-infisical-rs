@@ -470,6 +470,7 @@ struct Capability {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 enum TypeName {
+    ExecutionError,
     AuditLog,
     AppConnection,
     #[serde(rename = "githubAppConnectionInput")]
@@ -9383,7 +9384,7 @@ fn resolve_delivery(
         (Some(plane), None | Some(SecretDeliveryMode::Reference)) => plane
             .reserve()
             .map(SecretDisposition::Reference)
-            .map_err(|error| McpError::internal_error(error.to_string(), None)),
+            .map_err(|error| crate::execution_error::capacity_before_execution(&error)),
         (Some(_) | None, Some(SecretDeliveryMode::InlineValue)) | (None, None) => {
             Ok(SecretDisposition::Inline)
         }
@@ -9569,19 +9570,21 @@ fn resolve_uploaded_secret(
 
 /// Serve one fallible upstream result whose success is shaped by delivery mode.
 ///
-/// Mirrors [`tool_result`], with a fallible builder: an upstream failure stays a
-/// recoverable tool error, while a staging failure is a protocol error.
-fn delivered_result<T, E, O, F>(result: Result<T, E>, build: F) -> Result<CallToolResult, McpError>
+/// Mirrors [`tool_result`], with a fallible builder. Upstream failures become typed
+/// tool errors; result-construction failures return to the executor for classification.
+fn delivered_result<T, O, F>(
+    result: Result<T, infisical_api::ResourceError>,
+    build: F,
+) -> Result<CallToolResult, McpError>
 where
-    E: Display,
     O: Serialize,
     F: FnOnce(T) -> Result<O, McpError>,
 {
     match result {
         Ok(value) => structured(build(value)?),
-        Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(
-            error.to_string(),
-        )])),
+        Err(error) => {
+            Ok(crate::execution_error::ExecutionError::from_resource(&error).into_result())
+        }
     }
 }
 
@@ -12160,23 +12163,14 @@ async fn dispatch_executor(
     // Resolved before the upstream call, like the reveal delivery argument: a
     // refusal or a full plane must cost the caller a retry, never a non-replayed
     // operation that already ran.
-    let result_slot = match request.result_delivery {
-        Some(ResultDeliveryMode::File) => {
-            let Some(plane) = files else {
-                return Err(McpError::invalid_params(
-                    "resultDelivery \"file\" requires the transfer plane, which this \
-                     deployment does not configure; omit resultDelivery and page with the \
-                     operation's own limit arguments instead",
-                    None,
-                ));
-            };
-            Some(
-                plane
-                    .reserve()
-                    .map_err(|error| McpError::internal_error(error.to_string(), None))?,
-            )
+    let result_slot = match reserve_result_delivery(files, request.result_delivery) {
+        Ok(slot) => slot,
+        Err(error) => {
+            return Ok(crate::execution_error::name_error(
+                &request.operation,
+                crate::execution_error::ExecutionError::from_handler(error).into_result(),
+            ));
         }
-        Some(ResultDeliveryMode::Inline) | None => None,
     };
 
     // Move the operation's arguments rather than copying them, so a secret in
@@ -12188,12 +12182,36 @@ async fn dispatch_executor(
 
     // The published dispatch boundary sizes the final result once, after any
     // requested file delivery has replaced the payload with its reference.
-    let result = dispatch_tool(client, files, params).await?;
+    let result = match dispatch_tool(client, files, params).await {
+        Ok(result) => result,
+        Err(error) => crate::execution_error::ExecutionError::from_handler(error).into_result(),
+    };
     let result = match result_slot {
-        Some(slot) => deliver_result_as_file(&operation, slot, result)?,
+        Some(slot) => deliver_result_as_file(&operation, slot, result).unwrap_or_else(|error| {
+            crate::execution_error::ExecutionError::from_handler(error).into_result()
+        }),
         None => result,
     };
-    Ok(result)
+    Ok(crate::execution_error::name_error(&operation, result))
+}
+
+fn reserve_result_delivery(
+    files: Option<&SecretFilePlane>,
+    requested: Option<ResultDeliveryMode>,
+) -> Result<Option<StageSlot<'_>>, McpError> {
+    match requested {
+        Some(ResultDeliveryMode::File) => {
+            let plane = files.ok_or_else(|| McpError::invalid_params(
+                "resultDelivery \"file\" requires the transfer plane, which this deployment does not configure; choose a deployment with file transfer or explicitly request inline delivery",
+                None,
+            ))?;
+            plane
+                .reserve()
+                .map(Some)
+                .map_err(|error| crate::execution_error::capacity_before_execution(&error))
+        }
+        Some(ResultDeliveryMode::Inline) | None => Ok(None),
+    }
 }
 
 /// The fixed wrapper an executor returns for `resultDelivery: "file"`.
@@ -12318,9 +12336,13 @@ fn enforce_result_budget(
         if let Some(mut payload) = take_payload_wiping_text(&mut result) {
             crate::files::zeroize_tree(&mut payload);
         }
-        return CallToolResult::error(vec![ContentBlock::text(
-            "The completed result could not be serialized; reconcile the operation before retrying.",
-        )]);
+        return crate::execution_error::name_error(tool,
+            crate::execution_error::ExecutionError::new(
+                crate::execution_error::Category::Internal,
+                crate::execution_error::Effect::Unknown,
+                crate::execution_error::Recovery::Reconcile,
+                "The completed result could not be serialized; reconcile the operation before retrying."
+            ).into_result());
     };
     if serialized_bytes <= MAX_TOOL_RESULT_BYTES {
         return result;
@@ -12356,7 +12378,16 @@ fn enforce_result_budget(
     if let Some(mut payload) = take_payload_wiping_text(&mut result) {
         crate::files::zeroize_tree(&mut payload);
     }
-    CallToolResult::error(vec![ContentBlock::text(message)])
+    crate::execution_error::name_error(
+        tool,
+        crate::execution_error::ExecutionError::new(
+            crate::execution_error::Category::Capacity,
+            crate::execution_error::Effect::Unknown,
+            crate::execution_error::Recovery::Reconcile,
+            message,
+        )
+        .into_result(),
+    )
 }
 
 /// Every `secretFile` reference carried by a structured result, so an oversized
@@ -12605,6 +12636,9 @@ fn dispatch_local(
                 "types.describe arguments do not match the declared schema",
             )?;
             let schema = match input.type_name {
+                TypeName::ExecutionError => {
+                    schema_value::<crate::execution_error::ExecutionError>()
+                }
                 TypeName::Project => schema_value::<Project>(),
                 TypeName::AuditLog => schema_value::<AuditLog>(),
                 TypeName::AppConnection => schema_value::<AppConnection>(),
@@ -17318,23 +17352,28 @@ fn collection_result<T: Serialize>(
             infisical_api::ClientError::ResponseTooLarge { .. }
         ))
     ) {
-        return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-            "The upstream collection exceeded the response-size bound. {bound_guidance}"
-        ))]));
+        return Ok(crate::execution_error::ExecutionError::new(
+            crate::execution_error::Category::Capacity,
+            crate::execution_error::Effect::Unknown,
+            crate::execution_error::Recovery::CorrectRequest,
+            format!("The upstream collection exceeded the response-size bound. {bound_guidance}"),
+        )
+        .into_result());
     }
     tool_result(result)
 }
 
-fn tool_result<T, E>(result: Result<T, E>) -> Result<CallToolResult, McpError>
+fn tool_result<T>(
+    result: Result<T, infisical_api::ResourceError>,
+) -> Result<CallToolResult, McpError>
 where
     T: Serialize,
-    E: Display,
 {
     match result {
         Ok(output) => structured(output),
-        Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(
-            error.to_string(),
-        )])),
+        Err(error) => {
+            Ok(crate::execution_error::ExecutionError::from_resource(&error).into_result())
+        }
     }
 }
 
@@ -27550,10 +27589,10 @@ mod tests {
         );
 
         assert_eq!(result.is_error, Some(true));
-        assert!(
-            result.structured_content.is_none(),
-            "an over-limit result must not deliver a shortened payload that reads as complete"
-        );
+        let payload = result.structured_content.as_ref().unwrap();
+        assert!(payload.get("records").is_none());
+        assert_eq!(payload["error"]["category"], "capacity");
+        assert_eq!(payload["error"]["effect"], "unknown");
 
         let message = result
             .content
@@ -27805,9 +27844,12 @@ mod tests {
             ),
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(error.is_error, Some(true));
+        let payload = error.structured_content.as_ref().unwrap();
+        assert_eq!(payload["error"]["category"], "validation");
+        assert_eq!(payload["error"]["effect"], "notStarted");
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
@@ -27950,10 +27992,16 @@ mod tests {
             ),
         )
         .await
-        .unwrap_err();
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        .unwrap();
+        assert_eq!(error.is_error, Some(true));
+        let payload = error.structured_content.as_ref().unwrap();
+        assert_eq!(payload["error"]["category"], "validation");
+        assert_eq!(payload["error"]["effect"], "notStarted");
         assert!(
-            error.message.contains("requires the transfer plane"),
+            payload["error"]["correction"]
+                .as_str()
+                .unwrap()
+                .contains("requires the transfer plane"),
             "the refusal names the missing plane, not an unrecognized field"
         );
         assert!(server.received_requests().await.unwrap().is_empty());
@@ -28080,8 +28128,11 @@ mod tests {
                 ),
             )
             .await
-            .unwrap_err();
-            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            .unwrap();
+            assert_eq!(error.is_error, Some(true));
+            let payload = error.structured_content.as_ref().unwrap();
+            assert_eq!(payload["error"]["category"], "validation");
+            assert_eq!(payload["error"]["effect"], "notStarted");
         }
         assert!(server.received_requests().await.unwrap().is_empty());
     }
@@ -28106,8 +28157,11 @@ mod tests {
             ),
         )
         .await
-        .unwrap_err();
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        .unwrap();
+        assert_eq!(error.is_error, Some(true));
+        let payload = error.structured_content.as_ref().unwrap();
+        assert_eq!(payload["error"]["category"], "validation");
+        assert_eq!(payload["error"]["effect"], "notStarted");
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
@@ -28130,8 +28184,11 @@ mod tests {
             ),
         )
         .await
-        .unwrap_err();
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        .unwrap();
+        assert_eq!(error.is_error, Some(true));
+        let payload = error.structured_content.as_ref().unwrap();
+        assert_eq!(payload["error"]["category"], "validation");
+        assert_eq!(payload["error"]["effect"], "notStarted");
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
@@ -28306,6 +28363,17 @@ mod tests {
             // Reaching upstream is success here: the request got past every
             // validator and failed only because no route is mounted. A
             // rejection before that point means the example is not callable.
+            if let Ok(result) = &outcome {
+                assert_ne!(
+                    result
+                        .structured_content
+                        .as_ref()
+                        .and_then(|value| value.pointer("/error/category")),
+                    Some(&json!("validation")),
+                    "{} advertises invalid arguments",
+                    tool.name
+                );
+            }
             if let Err(error) = outcome {
                 assert_ne!(
                     error.code,
@@ -28581,10 +28649,10 @@ mod tests {
             Some(true),
             "an upstream page over the limit must not reach the caller"
         );
-        assert!(
-            result.structured_content.is_none(),
-            "no shortened payload may be delivered in place of the refused page"
-        );
+        let payload = result.structured_content.as_ref().unwrap();
+        assert!(payload.get("items").is_none());
+        assert_eq!(payload["error"]["category"], "capacity");
+        assert_eq!(payload["error"]["operation"], "projects.list");
 
         let message = result
             .content

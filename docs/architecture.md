@@ -507,8 +507,13 @@ Serving mode validates and constructs the Universal Auth client before the
 listener binds. Each stateless MCP service instance receives a clone of the
 same bounded client, so access-token caching and refresh single-flight state are
 shared across requests. Local discovery tools do not contact Infisical; resource
-tools return upstream failures as MCP tool errors rather than protocol errors,
-while malformed tool arguments remain protocol-level invalid-parameter errors.
+tools return upstream failures and known-operation argument failures as MCP tool
+errors with structured recovery facts and matching JSON text. Malformed executor
+envelopes, unknown operations, and incorrect executor routing remain protocol
+errors. Error categories come from exhaustive typed matches, never message parsing.
+The executor attaches only the resolved registry name. A transport failure has an
+unknown effect state; a failed KMS preflight records that the final action was
+not started while acknowledging possible earlier access events.
 
 ## Reveal transfer plane
 
