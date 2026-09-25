@@ -41,6 +41,7 @@ pub struct FileSettings {
     pub public_origin: String,
     pub ttl: Duration,
     pub max_staged: usize,
+    pub max_staged_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,9 +342,7 @@ fn file_settings_from_env() -> Result<Option<FileSettings>, SettingsError> {
             10,
             3600,
         )?),
-        // Envelopes can be as large as the upstream response ceiling, so the entry
-        // ceiling is kept small enough that a legal configuration cannot commit
-        // gigabytes of process memory to staged secrets. The floor is 2 because
+        // The floor is 2 because
         // one call may legitimately stage two entries: a whole-result envelope
         // plus the secret reference it wraps. A cap of 1 would make that
         // combination impossible by construction rather than merely contended.
@@ -352,6 +351,12 @@ fn file_settings_from_env() -> Result<Option<FileSettings>, SettingsError> {
             DEFAULT_FILE_MAX_STAGED,
             2,
             64,
+        )?,
+        max_staged_bytes: parse_number(
+            "INFISICAL_MCP_FILE_MAX_STAGED_BYTES",
+            512 * 1024 * 1024,
+            2 * infisical_mcp::files::MAX_ENVELOPE_BYTES,
+            1024 * 1024 * 1024,
         )?,
     }))
 }

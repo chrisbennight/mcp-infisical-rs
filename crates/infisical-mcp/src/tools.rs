@@ -140,6 +140,9 @@ use rmcp::{
     },
 };
 
+#[path = "file_receipt.rs"]
+mod file_receipt;
+
 use crate::files::{SecretFilePlane, SecretFileReference, StageSlot, secret_envelope};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned, ser::SerializeStruct};
@@ -11064,6 +11067,7 @@ pub(crate) fn operation_policy_payload() -> Value {
     serde_json::json!({
         "schemaRevision": SCHEMA_REVISION,
         "executionErrorSchema": schema_value::<crate::execution_error::ExecutionError>(),
+        "fileResultSchema": schema_value::<FileDeliveredResult>(),
         "operations": operations,
     })
 }
@@ -11163,7 +11167,7 @@ fn executor_output_schema() -> Map<String, Value> {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ExecutorResult",
         "type": "object",
-        "description": "Output per operations.describe; file: {operation, resultFile}.",
+        "description": "Output: operation schema or {operation, resultFile, reconciliation}.",
     }) else {
         unreachable!("a JSON object literal is an object")
     };
@@ -11796,6 +11800,8 @@ struct FileDeliveredResult {
     operation: String,
     /// Out-of-context reference to the full structured result.
     result_file: SecretFileReference,
+    /// Value-free resource identifiers for reconciling uncertain file receipt.
+    reconciliation: Vec<file_receipt::ReconciliationReference>,
 }
 
 /// Stage a successful structured result and return the wrapper carrying its
@@ -11812,12 +11818,14 @@ fn deliver_result_as_file(
     let Some(payload) = take_payload_wiping_text(&mut result) else {
         return Ok(result);
     };
+    let reconciliation = file_receipt::references(operation, &payload);
     let envelope = secret_envelope(operation, payload)
         .map_err(|_| McpError::internal_error("serialize the result envelope", None))?;
     let result_file = slot.stage(operation, envelope);
     structured(FileDeliveredResult {
         operation: operation.to_owned(),
         result_file,
+        reconciliation,
     })
 }
 
@@ -26681,11 +26689,43 @@ mod tests {
         assert_eq!(result.is_error, Some(false), "{serialized}");
     }
 
+    #[tokio::test]
+    async fn byte_exhaustion_refuses_token_creation_before_any_upstream_request() {
+        let server = MockServer::start().await;
+        let client = unused_client(&server);
+        let before = server.received_requests().await.unwrap().len();
+        let plane = SecretFilePlane::new(crate::files::FileConfig {
+            public_origin: "http://localhost:8000".to_owned(),
+            ttl: std::time::Duration::from_mins(1),
+            max_staged: 4,
+            max_staged_bytes: crate::files::MAX_ENVELOPE_BYTES - 1,
+        });
+        let result = dispatch(
+            &client,
+            Some(&plane),
+            request(
+                "infisical.write",
+                &json!({
+                    "operation": "identityTokenAuth.tokens.create",
+                    "arguments": {"identityId": "identity-1", "delivery": "reference"}
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let payload = result.structured_content.unwrap();
+        assert_eq!(payload["error"]["category"], "capacity");
+        assert_eq!(payload["error"]["effect"], "notStarted");
+        assert_eq!(server.received_requests().await.unwrap().len(), before);
+    }
+
     fn test_plane() -> Arc<SecretFilePlane> {
         SecretFilePlane::new(crate::files::FileConfig {
             public_origin: "http://localhost:8000".to_owned(),
             ttl: std::time::Duration::from_mins(1),
             max_staged: 4,
+            max_staged_bytes: 4 * crate::files::MAX_ENVELOPE_BYTES,
         })
     }
 
@@ -26903,6 +26943,34 @@ mod tests {
                 "{name} carries no file-input annotation"
             );
         }
+    }
+
+    #[test]
+    fn lost_whole_result_download_keeps_a_value_free_reconciliation_receipt() {
+        let plane = test_plane();
+        let result = super::CallToolResult::structured(json!({
+            "metadata": {"id": "token-1"}, "accessToken": "lost-delivery-canary"
+        }));
+        let output = super::deliver_result_as_file(
+            "identityTokenAuth.tokens.create",
+            plane.reserve().unwrap(),
+            result,
+        )
+        .unwrap()
+        .structured_content
+        .unwrap();
+        assert_eq!(
+            output["reconciliation"],
+            json!([{"kind":"token","id":"token-1"}])
+        );
+        assert!(!output.to_string().contains("lost-delivery-canary"));
+        let uri = output["resultFile"]["uri"].as_str().unwrap();
+        let authorized = plane.authorize_download(uri).unwrap();
+        let id = authorized.download.url.rsplit('/').next().unwrap();
+        let credential = &authorized.download.headers[crate::files::TRANSFER_CREDENTIAL_HEADER];
+        drop(plane.serve(id, credential).unwrap());
+        assert!(plane.serve(id, credential).is_err());
+        assert_eq!(output["reconciliation"][0]["id"], "token-1");
     }
 
     #[tokio::test]

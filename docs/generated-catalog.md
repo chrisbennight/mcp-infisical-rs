@@ -4,7 +4,7 @@ Generated from the executable `operation_policy` and `server_capabilities` expor
 Run `python3 scripts/catalog_summary.py --write` to regenerate; ordinary
 documentation validation checks this file for drift.
 
-Schema revision: `2026-09-25.6`. Pinned upstream: `0.160.12`.
+Schema revision: `2026-09-25.7`. Pinned upstream: `0.160.12`.
 
 This build serves **234 operations**. The separate capability ledger has
 **169 implemented** and

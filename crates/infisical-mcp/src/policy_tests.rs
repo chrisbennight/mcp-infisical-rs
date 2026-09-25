@@ -210,3 +210,36 @@ async fn metadata_gateway_denies_reveal_and_wrong_scope_without_forwarding() {
     }
     assert!(upstream.received_requests().await.unwrap().is_empty());
 }
+
+#[test]
+fn credential_outputs_have_reviewed_envelope_bounds() {
+    let reviewed = [
+        "identityUniversalAuth.clientSecrets.create",
+        "identityTokenAuth.tokens.create",
+        "secrets.reveal",
+        "secretRotations.sql.generatedCredentials.get",
+        "certificates.issue",
+        "certificates.renew",
+        "certificates.bundle.reveal",
+        "certificates.privateKey.reveal",
+        "certificateRequests.result.reveal",
+        "certificateProfiles.latestActiveBundle.reveal",
+        "certificateProfiles.acmeEabSecret.reveal",
+        "sshCertificates.issue",
+        "kms.decrypt",
+        "kms.keys.privateKey.reveal",
+        "kms.keys.privateKeys.bulkReveal",
+        "dynamicSecretLeases.create",
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    let actual = described_operations()
+        .iter()
+        .filter(|op| op.policy.credential_disclosure)
+        .map(|op| op.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual, reviewed,
+        "review response size bounds before adding credential delivery"
+    );
+}

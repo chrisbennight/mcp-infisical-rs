@@ -110,6 +110,9 @@ def generate(policy):
     errors = Types(policy['executionErrorSchema'], 'ExecutionError')
     declarations.extend(errors.declarations())
     declarations.append(f'export type ExecutionError = {errors.render(policy["executionErrorSchema"])};')
+    files = Types(policy['fileResultSchema'], 'FileResultWire')
+    declarations.extend(files.declarations())
+    declarations.append(f'export type FileResultWire = {files.render(policy["fileResultSchema"])};')
     declarations += ['export interface InputByOperation {', *inputs, '}',
                      'export interface OutputByOperation {', *outputs, '}',
                      'export type Operation = keyof InputByOperation;',

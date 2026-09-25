@@ -61,8 +61,8 @@ pub use audit_logs::{
 };
 pub use client::{
     ApiErrorKind, ApiFailure, CapabilityAvailability, ClientConfigError, ClientError,
-    ClientSettings, InfisicalClient, MutationOperation, ObservableReadBodyOperation,
-    ObservableReadOperation, ReadOperation, TransportErrorKind,
+    ClientSettings, InfisicalClient, MAXIMUM_RESPONSE_BYTES, MutationOperation,
+    ObservableReadBodyOperation, ObservableReadOperation, ReadOperation, TransportErrorKind,
 };
 pub use code_signer_governance::{
     CodeSignerApprovalGrant, CodeSignerApprovalGrantStatus, CodeSignerApprovalPolicy,
