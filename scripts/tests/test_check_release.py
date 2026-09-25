@@ -12,6 +12,21 @@ SPEC.loader.exec_module(CHECK_RELEASE)
 
 
 class TestReleaseContract(unittest.TestCase):
+    def test_image_freshness_evidence_uses_the_scan_cache(self) -> None:
+        for path, validate, directory in (
+            (CHECK_RELEASE.GITHUB_TEST_WORKFLOW, CHECK_RELEASE.validate_github_test_workflow, ".security"),
+            (CHECK_RELEASE.BUILD_WORKFLOW, CHECK_RELEASE.validate_build_workflow, ".release"),
+        ):
+            workflow = path.read_text(encoding="utf-8")
+            for marker in (
+                "          cache-dir: .cache/trivy",
+                f"          trivy --cache-dir .cache/trivy version --format json > {directory}/trivy-metadata.json",
+                f"            --scanner-metadata {directory}/trivy-metadata.json",
+            ):
+                with self.subTest(path=path, marker=marker):
+                    self.assertIn(marker, workflow)
+                    self.assertTrue(validate(workflow.replace(marker, "")))
+
     def test_github_checks_preserve_validation_and_runtime_hardening(self) -> None:
         workflow = CHECK_RELEASE.GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(CHECK_RELEASE.validate_github_test_workflow(workflow), [])
@@ -71,6 +86,24 @@ class TestReleaseContract(unittest.TestCase):
             ),
             [],
         )
+
+    def test_image_qualification_must_precede_release_tag_promotion(self) -> None:
+        workflow = CHECK_RELEASE.BUILD_WORKFLOW.read_text(encoding="utf-8")
+        qualify = CHECK_RELEASE._named_step_block(workflow, "Qualify release image and produce runtime SBOM")
+        self.assertIsNotNone(qualify)
+        broken = workflow.replace(qualify + "\n", "")
+        marker = "      - name: Attest published image\n"
+        broken = broken.replace(marker, qualify + "\n" + marker)
+        self.assertIn("release image must be scanned and qualified before promotion and attestation",
+                      CHECK_RELEASE.validate_build_workflow(broken))
+
+    def test_security_evidence_and_scanner_coverage_are_required(self) -> None:
+        workflow = CHECK_RELEASE.GITHUB_TEST_WORKFLOW.read_text(encoding="utf-8")
+        for marker in ("          list-all-pkgs: 'true'", "          ignore-unfixed: 'false'",
+                       "            --output .security/advisory-dispositions.json",
+                       "            --image-id \"$image_id\" --output .security/image-dispositions.json"):
+            self.assertIn(marker, workflow)
+            self.assertTrue(CHECK_RELEASE.validate_github_test_workflow(workflow.replace(marker, "# " + marker)))
 
     def test_undigested_builder_is_rejected(self) -> None:
         dockerfile = CHECK_RELEASE.DOCKERFILE.read_text(encoding="utf-8")

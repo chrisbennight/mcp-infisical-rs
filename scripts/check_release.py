@@ -131,7 +131,7 @@ def validate_dockerfile(text: str) -> list[str]:
             errors.append(f"container base is not digest-pinned: {stage}")
     required = {
         "locked release build": lambda instruction: instruction.startswith("RUN ")
-        and "cargo build --release --locked --bin mcp-infisical-rs" in instruction,
+        and "cargo auditable build --release --locked --bin mcp-infisical-rs" in instruction,
         "distroless non-root runtime": lambda instruction: instruction.startswith("FROM ")
         and "gcr.io/distroless/cc-debian12:nonroot@sha256:" in instruction,
         "license notices": lambda instruction: instruction
@@ -179,9 +179,14 @@ def validate_build_workflow(text: str) -> list[str]:
         errors.append("release publication permissions must be explicitly scoped")
     for name, lines in (
         ("Validate release source and dependency licenses", ("        run: python3 scripts/prepare_release.py",)),
-        ("Build and publish versioned image", (
+        ("Build release candidate", (
             "          platforms: linux/amd64", "          push: true", "          provenance: mode=max",
-            "            ${{ env.IMAGE }}:${{ github.ref_name }}", "            ${{ env.IMAGE }}:sha-${{ github.sha }}",
+            "            ${{ env.IMAGE }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}",
+        )),
+        ("Scan exact release candidate", (
+            "          image-ref: ${{ env.IMAGE }}@${{ steps.image.outputs.digest }}",
+            "          cache-dir: .cache/trivy",
+            "          list-all-pkgs: 'true'", "          ignore-unfixed: 'false'",
         )),
         ("Attest published image", ("          subject-digest: ${{ steps.image.outputs.digest }}", "          push-to-registry: true")),
         ("Record immutable image digest", ("        run: python3 scripts/prepare_release.py --record-digest",)),
@@ -194,6 +199,23 @@ def validate_build_workflow(text: str) -> list[str]:
         if "uses:" in line and "uses: ./" not in line and not line.lstrip().startswith("#"):
             if not re.search(r"@[0-9a-f]{40}(?: |$)", line):
                 errors.append("release actions must be pinned to full commits")
+    _require_step(errors, publish or "", "Qualify release image and produce runtime SBOM", (
+        'trivy --cache-dir .cache/trivy version --format json > .release/trivy-metadata.json',
+        '--scanner-metadata .release/trivy-metadata.json \\',
+        'trivy convert --format cyclonedx --output .release/runtime.cdx.json .release/image-scan.json',
+        '--digest "$IMAGE_DIGEST" --output .release/image-dispositions.json',
+    ))
+    _require_step(errors, publish or "", "Promote qualified image without rebuilding", (
+        '--tag "$IMAGE:$GITHUB_REF_NAME" --tag "$IMAGE:sha-$GITHUB_SHA" "$IMAGE@$IMAGE_DIGEST"',
+        'test "$published_digest" = "$IMAGE_DIGEST"',
+    ))
+    _require_step(errors, publish or "", "Retain release metadata", always=True)
+    required_order = ["Build release candidate", "Scan exact release candidate",
+                      "Qualify release image and produce runtime SBOM",
+                      "Promote qualified image without rebuilding", "Attest published image"]
+    positions = [text.find(f"      - name: {name}\n") for name in required_order]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        errors.append("release image must be scanned and qualified before promotion and attestation")
     return errors
 
 
@@ -275,6 +297,22 @@ def validate_github_test_workflow(text: str) -> list[str]:
         step = _require_step(errors, test or "", name)
         if not _has_yaml_line(step, f"        run: {command}"):
             errors.append(f"GitHub checks must run {command}")
+    _require_step(errors, test or "", "Dependency advisory gate", (
+        '--output .security/advisory-dispositions.json',
+    ))
+    scan = _require_step(errors, test or "", "Scan runtime image")
+    for line in ("          scanners: vuln", "          list-all-pkgs: 'true'",
+                 "          cache-dir: .cache/trivy",
+                 "          ignore-unfixed: 'false'", "          image-ref: ${{ env.SMOKE_IMAGE }}"):
+        if not _has_yaml_line(scan, line):
+            errors.append(f"runtime image scan is missing: {line.strip()}")
+    _require_step(errors, test or "", "Validate image evidence and produce runtime SBOM", (
+        'trivy --cache-dir .cache/trivy version --format json > .security/trivy-metadata.json',
+        '--scanner-metadata .security/trivy-metadata.json \\',
+        'trivy convert --format cyclonedx --output .security/runtime.cdx.json .security/image-scan.json',
+        '--image-id "$image_id" --output .security/image-dispositions.json',
+    ))
+    _require_step(errors, test or "", "Retain security evidence", always=True)
     return errors
 
 

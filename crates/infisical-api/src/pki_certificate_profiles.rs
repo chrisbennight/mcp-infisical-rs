@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 
-use aws_lc_rs::{
-    signature::{
-        ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P384_SHA384_ASN1_SIGNING,
-        ECDSA_P521_SHA512_ASN1_SIGNING, EcdsaKeyPair, Ed25519KeyPair, KeyPair, RsaKeyPair,
-    },
-    unstable::signature::{ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING, PqdsaKeyPair},
+use aws_lc_rs::signature::{
+    ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P384_SHA384_ASN1_SIGNING, ECDSA_P521_SHA512_ASN1_SIGNING,
+    EcdsaKeyPair, Ed25519KeyPair, KeyPair, ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING,
+    PqdsaKeyPair, RsaKeyPair,
 };
 use fips205::traits::{SerDes, Signer};
 use pkcs8::der::Decode;
@@ -3321,10 +3319,8 @@ mod tests {
         encoding::{AsDer, Pkcs8V1Der},
         rsa::KeySize,
         signature::{
-            ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, Ed25519KeyPair, KeyPair, RsaKeyPair,
-        },
-        unstable::signature::{
-            ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING, PqdsaKeyPair,
+            ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, Ed25519KeyPair, KeyPair,
+            ML_DSA_44_SIGNING, ML_DSA_65_SIGNING, ML_DSA_87_SIGNING, PqdsaKeyPair, RsaKeyPair,
         },
     };
     use fips205::traits::{KeyGen, SerDes};
@@ -5117,11 +5113,11 @@ mod tests {
         let ed = Ed25519KeyPair::generate().unwrap();
         let ed25519_der = ed.to_pkcs8v1().unwrap();
         let ml44 = PqdsaKeyPair::generate(&ML_DSA_44_SIGNING).unwrap();
-        let ml44_der = ml44.to_pkcs8().unwrap();
+        let ml44_der = ml44.to_pkcs8v1().unwrap();
         let ml65 = PqdsaKeyPair::generate(&ML_DSA_65_SIGNING).unwrap();
-        let ml65_der = ml65.to_pkcs8().unwrap();
+        let ml65_der = ml65.to_pkcs8v1().unwrap();
         let ml87 = PqdsaKeyPair::generate(&ML_DSA_87_SIGNING).unwrap();
-        let ml87_der = ml87.to_pkcs8().unwrap();
+        let ml87_der = ml87.to_pkcs8v1().unwrap();
         let cases = [
             (
                 "1.2.840.113549.1.1.1",
