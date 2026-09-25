@@ -18,7 +18,7 @@ export interface Transport {
 }
 /** A host-owned JSON Schema 2020-12 validator. Do not log either argument. */
 export type Validate = (schema: unknown, value: unknown) => boolean;
-export type FileResult<O extends Operation> = Omit<FileResultWire, 'operation'> & { operation: O };
+export type FileResult<O extends Operation> = FileResultWire & { operation: O };
 export type Outcome<T> =
   | { kind: 'success'; value: HostValue<T> }
   | { kind: 'error'; error: HostValue<ExecutionError> };

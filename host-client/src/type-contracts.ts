@@ -15,3 +15,23 @@ function contracts(client: HostClient): void {
   void names;
 }
 void contracts;
+
+async function fileContracts(client: HostClient): Promise<void> {
+  const outcome = await client.invokeFile('identityTokenAuth.tokens.create', { identityId: 'identity-1' });
+  if (outcome.kind === 'success') {
+    const result = outcome.value.read();
+    const operation: 'identityTokenAuth.tokens.create' = result.operation;
+    const uri: string = result.resultFile.uri;
+    const identifiers: string[] = result.reconciliation.map(receipt => receipt.id);
+    for (const receipt of result.reconciliation) {
+      const kind: 'clientSecret' | 'token' | 'dynamicLease' | 'certificate' | 'certificateRequest' | 'sshCertificate' = receipt.kind;
+      void kind;
+    }
+    // @ts-expect-error the successful operation retains its exact literal
+    const otherOperation: 'projects.list' = result.operation;
+    // @ts-expect-error file URIs remain strings
+    const numericUri: number = result.resultFile.uri;
+    void [operation, uri, identifiers, otherOperation, numericUri];
+  }
+}
+void fileContracts;
