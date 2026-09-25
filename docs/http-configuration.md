@@ -3,6 +3,9 @@
 For the standalone Quickstart, see [Standalone connections](standalone.md).
 The signed-identity requirements below apply only to the gateway profile.
 
+`INFISICAL_MCP_OPERATION_PROFILE` independently selects `metadata`, `secrets`,
+`pkiSsh`, or `full` capabilities in every transport. See [Operation policy](operation-policy.md).
+
 In the gateway profile, all `/mcp` requests require both `Authorization: Bearer …` and
 `X-MCP-Identity: …`. The bearer must contain at least 32 bytes and the identity
 JWT must use EdDSA with a known `kid`, the configured issuer, audience

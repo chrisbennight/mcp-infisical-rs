@@ -140,6 +140,11 @@ credentials, routing addresses, and limits that the transport does not enforce.
 Discovery makes no upstream permission or license probe: `upstreamAccess` is
 `notProbed`, and the compiled capability list is not a live entitlement check.
 
+The same runtime record reports the static operation profile. Set
+`INFISICAL_MCP_OPERATION_PROFILE` to restrict this instance's discovery and
+execution; see [Operation policy](operation-policy.md). This is independent of
+the HTTP authentication profile and does not add local user roles.
+
 For the existing signed-identity integration, use
 `--http-profile gateway` (also the default HTTP profile) and configure its bearer,
 issuer, and JWKS URL. That profile still verifies both credentials on every

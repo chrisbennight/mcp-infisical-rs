@@ -74,6 +74,7 @@ pub fn build_router(
         infisical_mcp::runtime::HttpProfile::Standalone
     };
     let handler = InfisicalMcp::new(settings.infisical.clone())
+        .with_operation_profile(settings.operation_profile)
         .with_runtime(infisical_mcp::runtime::RuntimeSettings::Http {
             profile,
             max_request_bytes: settings.max_body_bytes,
@@ -463,6 +464,21 @@ mod tests {
         jwks_delay: Duration,
         files: Option<crate::config::FileSettings>,
     ) -> (Router, TestKey, MockServer) {
+        test_router_with_profile(
+            request_timeout,
+            jwks_delay,
+            files,
+            infisical_mcp::policy::OperationProfile::Full,
+        )
+        .await
+    }
+
+    async fn test_router_with_profile(
+        request_timeout: Duration,
+        jwks_delay: Duration,
+        files: Option<crate::config::FileSettings>,
+        operation_profile: infisical_mcp::policy::OperationProfile,
+    ) -> (Router, TestKey, MockServer) {
         let key = test_key();
         let jwks_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -477,6 +493,7 @@ mod tests {
             .mount(&jwks_server)
             .await;
         let settings = Settings {
+            operation_profile,
             host: "127.0.0.1".into(),
             port: 8000,
             log_level: "info".into(),
@@ -544,7 +561,14 @@ mod tests {
     }
 
     fn mcp_request(body: &Value, bearer: Option<&str>, identity: Option<&str>) -> Request<Body> {
-        let body = &address_through_executor(body);
+        raw_mcp_request(&address_through_executor(body), bearer, identity)
+    }
+
+    fn raw_mcp_request(
+        body: &Value,
+        bearer: Option<&str>,
+        identity: Option<&str>,
+    ) -> Request<Body> {
         let mut builder = Request::builder()
             .method("POST")
             .uri("/mcp")
@@ -828,6 +852,61 @@ mod tests {
             )
             .await;
             assert_eq!(response["error"]["code"], -32602);
+        }
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/jwks");
+    }
+
+    #[tokio::test]
+    async fn metadata_profile_hides_and_refuses_reveal_on_every_wire_entry_point() {
+        let (router, key, upstream) = test_router_with_profile(
+            Duration::from_secs(5),
+            Duration::ZERO,
+            None,
+            infisical_mcp::policy::OperationProfile::Metadata,
+        )
+        .await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        let listed = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            2,
+            "operations.list",
+            json!({"namePrefix":"secrets."}),
+        )
+        .await;
+        assert_eq!(
+            listed["result"]["structuredContent"]["operations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            listed["result"]["structuredContent"]["operations"][0]["name"],
+            "secrets.metadata.list"
+        );
+        for name in [
+            "infisical.read",
+            "infisical.readAudited",
+            "infisical.write",
+            "infisical.destroy",
+            "operations.describe",
+            "secrets.reveal",
+        ] {
+            let response = router.clone().oneshot(raw_mcp_request(&json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call", "params": {
+                    "name":name, "arguments":{"operation":"secrets.reveal", "arguments":{
+                        "projectId":"project-1", "environment":"prod", "secretPath":"/", "secretName":"profile-secret-canary"
+                    }}
+                }
+            }),Some(CURRENT),Some(&identity))).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let response = json_body(response).await;
+            assert!(response.get("error").is_some());
+            assert!(!response.to_string().contains("profile-secret-canary"));
         }
         let requests = upstream.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);

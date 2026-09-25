@@ -13,6 +13,15 @@ mod discovery_tests;
 #[path = "registry_tests.rs"]
 mod registry_tests;
 
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod policy_tests;
+
+#[path = "operation_policy.rs"]
+mod operation_policy;
+
+use crate::policy::{OperationProfile, PolicyFacts};
+
 use infisical_api::{
     AdditionalPrivilegeChange, AdditionalPrivilegeCreation, AdditionalPrivilegeId,
     AdditionalPrivilegeLifetime, AdditionalPrivilegeSlug, AdditionalPrivilegeStartTime,
@@ -11356,7 +11365,7 @@ struct OperationSummary {
 struct OperationsListOutput {
     /// Matching page, ranked by query relevance then exact name.
     operations: Vec<OperationSummary>,
-    /// Operations this build serves in total, before filtering.
+    /// Operations enabled in this instance, before search filtering.
     total: usize,
     /// Operations matching the filters before pagination.
     matched: usize,
@@ -11422,13 +11431,13 @@ struct OperationAvailability {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExecuteInput {
-    /// Exact name from operations.list; must belong to this executor's tier.
+    /// Name from operations.list, belonging to this executor's tier.
     #[schemars(length(min = 3, max = 128))]
     operation: String,
-    /// Arguments matching the operation's input schema from `operations.describe`.
+    /// Arguments per operations.describe input schema.
     #[serde(default)]
     arguments: Map<String, Value>,
-    /// file stages a resultFile reference; requires file transfer. Default inline.
+    /// file requires transfer and returns resultFile; default inline.
     #[serde(default)]
     #[schemars(with = "ResultDeliveryMode")]
     result_delivery: Option<ResultDeliveryMode>,
@@ -11448,6 +11457,7 @@ struct OperationDefinition {
     description: &'static str,
     tier: ToolTier,
     open_world: bool,
+    policy: PolicyFacts,
     input_constructor: fn() -> Map<String, Value>,
     output_constructor: fn() -> Map<String, Value>,
     input_schema: OnceLock<Arc<Map<String, Value>>>,
@@ -11513,6 +11523,67 @@ fn operation_definition(name: &str) -> Option<&'static OperationDefinition> {
     operation_registry().get(name)
 }
 
+pub(crate) fn operation_policy_payload() -> Value {
+    let operations: Vec<_> = described_operations()
+        .iter()
+        .map(|operation| {
+            let input = operation.input_schema();
+            let properties = input.get("properties").and_then(Value::as_object);
+            let confirmations: Vec<_> = properties
+                .into_iter()
+                .flat_map(|properties| properties.keys())
+                .filter(|name| name.starts_with("confirm") || name.starts_with("acknowledge"))
+                .collect();
+            let scope_selectors: Vec<_> = [
+                "projectId",
+                "organizationId",
+                "environment",
+                "secretPath",
+                "identityId",
+                "groupId",
+            ]
+            .into_iter()
+            .filter(|name| properties.is_some_and(|properties| properties.contains_key(*name)))
+            .map(|name| format!("/{name}"))
+            .collect();
+            let profiles: Vec<_> = [
+                OperationProfile::Metadata,
+                OperationProfile::Secrets,
+                OperationProfile::PkiSsh,
+                OperationProfile::Full,
+            ]
+            .into_iter()
+            .filter(|profile| profile.allows(operation.policy))
+            .collect();
+            serde_json::json!({
+            "operation": operation.name,
+            "description": operation.description,
+                "executor": operation.tier.executor(),
+                "tier": operation.tier.slug(),
+            "gatewayRisk": "high",
+            "policyReviewed": operation.policy.reviewed,
+                "effects": {
+                    "auditedRead": operation.tier == ToolTier::ReadAudited,
+                    "mutation": matches!(operation.tier, ToolTier::Write | ToolTier::Destroy),
+                    "destructive": operation.tier == ToolTier::Destroy
+                },
+                "credentialDisclosure": operation.policy.credential_disclosure,
+                "confirmationFields": confirmations,
+                "scopeSelectors": scope_selectors,
+                "requiresFileTransfer": operation.name == CERTIFICATES_IMPORT_TOOL,
+                "profiles": profiles,
+                "inputSchema": input.as_ref(),
+                "outputSchema": operation.output_schema().as_ref()
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "schemaRevision": SCHEMA_REVISION,
+        "executionErrorSchema": schema_value::<crate::execution_error::ExecutionError>(),
+        "operations": operations,
+    })
+}
+
 fn executor_tools() -> Vec<Tool> {
     ToolTier::all()
         .into_iter()
@@ -11533,9 +11604,8 @@ fn executor_tools() -> Vec<Tool> {
 const fn executor_description(tier: ToolTier) -> &'static str {
     match tier {
         ToolTier::Read => {
-            "Run one repeatable Infisical read, such as listing projects or reading a secret \
-             value. Use operations.list to find its name and executor, then operations.describe \
-             for its arguments. Example: \
+            "Run a repeatable read, such as listing projects or reading a secret value. \
+             Find names and executors with operations.list, arguments with operations.describe. Example: \
              {\"operation\": \"projects.list\", \"arguments\": {\"limit\": 20}}. Unknown and wrong-tier \
              names are rejected before upstream access. Safe to repeat: a transport failure can be retried. A read that \
              Infisical records as an access event is on infisical.readAudited."
@@ -11609,7 +11679,7 @@ fn executor_output_schema() -> Map<String, Value> {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "ExecutorResult",
         "type": "object",
-        "description": "Output per operations.describe; file delivery returns {operation, resultFile}.",
+        "description": "Output per operations.describe; file: {operation, resultFile}.",
     }) else {
         unreachable!("a JSON object literal is an object")
     };
@@ -11668,6 +11738,7 @@ where
         description,
         tier,
         open_world,
+        policy: operation_policy::facts(name),
         input_constructor: schema_object::<Input>,
         output_constructor: schema_object::<Output>,
         input_schema: OnceLock::new(),
@@ -12049,10 +12120,21 @@ pub(crate) async fn dispatch(
     dispatch_with_runtime(client, files, &RuntimeSettings::default(), params).await
 }
 
+#[cfg(test)]
 pub(crate) async fn dispatch_with_runtime(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
     runtime: &RuntimeSettings,
+    params: CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    dispatch_with_profile(client, files, runtime, OperationProfile::Full, params).await
+}
+
+pub(crate) async fn dispatch_with_profile(
+    client: &InfisicalClient,
+    files: Option<&SecretFilePlane>,
+    runtime: &RuntimeSettings,
+    profile: OperationProfile,
     mut params: CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     if !is_published_tool(params.name.as_ref()) {
@@ -12068,13 +12150,17 @@ pub(crate) async fn dispatch_with_runtime(
         .as_ref()
         .and_then(|arguments| arguments.get("operation"))
         .and_then(Value::as_str)
-        .and_then(operation_definition)
-        .map(|operation| operation.name);
+        .and_then(operation_definition);
+    if operation.is_some_and(|operation| !profile.allows(operation.policy)) {
+        return Err(unknown_operation());
+    }
+    let operation = operation.map(|operation| operation.name);
     let result = if is_local_discovery(params.name.as_ref()) {
         dispatch_local(
             &mut params,
             runtime.capabilities(client, files),
             files.is_some(),
+            profile,
         )?
     } else {
         dispatch_tool(client, files, params).await?
@@ -12280,6 +12366,7 @@ pub(crate) async fn dispatch_tool(
             &mut params,
             RuntimeSettings::default().capabilities(client, files),
             files.is_some(),
+            OperationProfile::Full,
         );
     }
     if is_dynamic_secret_tool(params.name.as_ref()) {
@@ -12477,8 +12564,16 @@ fn oversized_result_advice(tool: &str) -> OversizedResultAdvice {
     }
 }
 
+#[cfg(test)]
 fn dispatch_operations_list(
     params: &mut CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    dispatch_operations_list_for_profile(params, OperationProfile::Full)
+}
+
+fn dispatch_operations_list_for_profile(
+    params: &mut CallToolRequestParams,
+    profile: OperationProfile,
 ) -> Result<CallToolResult, McpError> {
     let input = parse_arguments::<OperationsListInput>(
         params,
@@ -12510,6 +12605,7 @@ fn dispatch_operations_list(
     let described = described_operations();
     let mut matching: Vec<_> = described
         .iter()
+        .filter(|operation| profile.allows(operation.policy))
         .filter(|operation| {
             input
                 .tier
@@ -12552,14 +12648,26 @@ fn dispatch_operations_list(
         next_offset: (input.offset + operations.len() < matched)
             .then_some(input.offset + operations.len()),
         operations,
-        total: described.len(),
+        total: described
+            .iter()
+            .filter(|operation| profile.allows(operation.policy))
+            .count(),
         matched,
     })
 }
 
+#[cfg(test)]
 fn dispatch_operations_describe(
     params: &mut CallToolRequestParams,
     files_enabled: bool,
+) -> Result<CallToolResult, McpError> {
+    dispatch_operations_describe_for_profile(params, files_enabled, OperationProfile::Full)
+}
+
+fn dispatch_operations_describe_for_profile(
+    params: &mut CallToolRequestParams,
+    files_enabled: bool,
+    profile: OperationProfile,
 ) -> Result<CallToolResult, McpError> {
     let input = parse_arguments::<OperationsDescribeInput>(
         params,
@@ -12571,7 +12679,9 @@ fn dispatch_operations_describe(
             None,
         ));
     }
-    let Some(operation) = operation_definition(&input.operation) else {
+    let Some(operation) =
+        operation_definition(&input.operation).filter(|operation| profile.allows(operation.policy))
+    else {
         return Err(unknown_operation());
     };
 
@@ -12607,9 +12717,11 @@ fn is_local_discovery(name: &str) -> bool {
 
 fn dispatch_local(
     params: &mut CallToolRequestParams,
-    runtime: RuntimeCapabilities,
+    mut runtime: RuntimeCapabilities,
     files_enabled: bool,
+    profile: OperationProfile,
 ) -> Result<CallToolResult, McpError> {
+    runtime.operation_profile = profile;
     match params.name.as_ref() {
         SERVER_INFO_TOOL => {
             parse_arguments::<EmptyInput>(params, "server.info does not accept arguments")?;
@@ -12622,8 +12734,10 @@ fn dispatch_local(
                 schema_revision: SCHEMA_REVISION,
             })
         }
-        OPERATIONS_LIST_TOOL => dispatch_operations_list(params),
-        OPERATIONS_DESCRIBE_TOOL => dispatch_operations_describe(params, files_enabled),
+        OPERATIONS_LIST_TOOL => dispatch_operations_list_for_profile(params, profile),
+        OPERATIONS_DESCRIBE_TOOL => {
+            dispatch_operations_describe_for_profile(params, files_enabled, profile)
+        }
         SERVER_CAPABILITIES_TOOL => {
             parse_arguments::<EmptyInput>(params, "server.capabilities does not accept arguments")?;
             let mut output = capabilities();

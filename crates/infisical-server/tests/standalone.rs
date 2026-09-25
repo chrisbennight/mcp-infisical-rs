@@ -218,6 +218,65 @@ async fn stdio_reports_delivery_requirements_without_probing_upstream_access() {
 }
 
 #[tokio::test]
+async fn stdio_applies_operation_profile_before_upstream_authentication() {
+    let upstream = MockServer::start().await;
+    let mut child = command(&upstream.uri())
+        .args(["--transport", "stdio"])
+        .env("INFISICAL_MCP_OPERATION_PROFILE", "metadata")
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    send_message(&mut child, &initialize()).await;
+    assert!(read_message(&mut reader).await.get("result").is_some());
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+            "name":"infisical.read","arguments":{"operation":"secrets.reveal","arguments":{}}
+        }}),
+    )
+    .await;
+    assert!(read_message(&mut reader).await.get("error").is_some());
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+            "name":"server.capabilities","arguments":{}
+        }}),
+    )
+    .await;
+    assert_eq!(
+        read_message(&mut reader).await["result"]["structuredContent"]["runtime"]["operationProfile"],
+        "metadata"
+    );
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    drop(child.stdin.take());
+    assert!(
+        timeout(DEADLINE, child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    let output = command(&upstream.uri())
+        .args(["--transport", "stdio"])
+        .env("INFISICAL_MCP_OPERATION_PROFILE", "invalid-profile-canary")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        !String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("invalid-profile-canary")
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test]
 async fn stdio_rejects_oversized_and_malformed_messages_without_logging_payloads() {
     for input in [
         format!("{}\n", "x".repeat(2048)),

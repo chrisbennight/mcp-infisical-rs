@@ -19,6 +19,7 @@ const DEFAULT_FILE_TTL_SECONDS: u64 = 120;
 const DEFAULT_FILE_MAX_STAGED: usize = 16;
 
 pub struct Settings {
+    pub operation_profile: infisical_mcp::policy::OperationProfile,
     pub host: String,
     pub port: u16,
     pub log_level: String,
@@ -57,6 +58,7 @@ pub enum HttpProfile {
 
 /// Configuration for a local process with no HTTP listener or file-transfer routes.
 pub struct StdioSettings {
+    pub operation_profile: infisical_mcp::policy::OperationProfile,
     pub infisical: InfisicalClient,
     pub log_level: String,
     pub max_body_bytes: usize,
@@ -77,6 +79,7 @@ impl StdioSettings {
         }
         Ok(Self {
             infisical: infisical_from_env()?,
+            operation_profile: operation_profile_from_env()?,
             log_level: value_or("INFISICAL_MCP_LOG_LEVEL", "info"),
             max_body_bytes: parse_number(
                 "INFISICAL_MCP_MAX_BODY_BYTES",
@@ -170,6 +173,7 @@ impl Settings {
 
         Ok(Self {
             host: listener.host,
+            operation_profile: operation_profile_from_env()?,
             port: listener.port,
             log_level: value_or("INFISICAL_MCP_LOG_LEVEL", "info"),
             allowed_hosts: parse_allowed_hosts(&value_or(
@@ -215,6 +219,16 @@ impl Settings {
             port: parse_number("INFISICAL_MCP_PORT", DEFAULT_PORT, 1, u16::MAX)?,
         })
     }
+}
+
+fn operation_profile_from_env() -> Result<infisical_mcp::policy::OperationProfile, SettingsError> {
+    const VARIABLE: &str = "INFISICAL_MCP_OPERATION_PROFILE";
+    infisical_mcp::policy::OperationProfile::parse(&value_or(VARIABLE, "full")).map_err(|message| {
+        SettingsError::Invalid {
+            variable: VARIABLE,
+            message: message.into(),
+        }
+    })
 }
 
 fn infisical_from_env() -> Result<InfisicalClient, SettingsError> {

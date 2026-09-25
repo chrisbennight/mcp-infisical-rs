@@ -20,6 +20,7 @@ mod collection_cost;
 mod discovery;
 mod execution_error;
 pub mod files;
+pub mod policy;
 mod projections;
 pub mod runtime;
 mod tools;
@@ -44,6 +45,7 @@ pub struct InfisicalMcp {
     client: InfisicalClient,
     files: Option<Arc<SecretFilePlane>>,
     runtime: runtime::RuntimeSettings,
+    operation_profile: policy::OperationProfile,
 }
 
 impl InfisicalMcp {
@@ -54,6 +56,7 @@ impl InfisicalMcp {
             client,
             files: None,
             runtime: runtime::RuntimeSettings::default(),
+            operation_profile: policy::OperationProfile::Full,
         }
     }
 
@@ -61,6 +64,13 @@ impl InfisicalMcp {
     #[must_use]
     pub fn with_runtime(mut self, runtime: runtime::RuntimeSettings) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    /// Restrict this instance's discovery and execution capabilities at startup.
+    #[must_use]
+    pub fn with_operation_profile(mut self, profile: policy::OperationProfile) -> Self {
+        self.operation_profile = profile;
         self
     }
 
@@ -101,6 +111,12 @@ pub fn server_capabilities_payload() -> Result<serde_json::Value, serde_json::Er
     tools::server_capabilities_payload()
 }
 
+/// Export operation policy and exact argument/result schemas without credentials or network access.
+#[must_use]
+pub fn operation_policy_payload() -> serde_json::Value {
+    tools::operation_policy_payload()
+}
+
 impl ServerHandler for InfisicalMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
@@ -125,8 +141,14 @@ impl ServerHandler for InfisicalMcp {
         params: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        tools::dispatch_with_runtime(&self.client, self.files.as_deref(), &self.runtime, params)
-            .await
+        tools::dispatch_with_profile(
+            &self.client,
+            self.files.as_deref(),
+            &self.runtime,
+            self.operation_profile,
+            params,
+        )
+        .await
     }
 
     fn on_custom_request(
