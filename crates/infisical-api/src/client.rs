@@ -606,6 +606,11 @@ impl InfisicalClient {
                     limit: self.inner.settings.max_response_bytes,
                 });
             }
+            grow_response_buffer(
+                &mut body,
+                new_length,
+                self.inner.settings.max_response_bytes,
+            );
             body.extend_from_slice(&chunk);
         }
         if body.is_empty() && accepts_empty_response {
@@ -614,6 +619,18 @@ impl InfisicalClient {
             serde_json::from_slice(body.as_slice()).map_err(|_| ClientError::InvalidResponse)
         }
     }
+}
+
+/// Replace growing allocations explicitly so their initialized bytes are wiped
+/// on drop, rather than released by Vec's internal reallocation.
+fn grow_response_buffer(body: &mut Zeroizing<Vec<u8>>, required: usize, limit: usize) {
+    if required <= body.capacity() {
+        return;
+    }
+    let capacity = body.capacity().saturating_mul(2).max(required).min(limit);
+    let mut replacement = Zeroizing::new(Vec::with_capacity(capacity));
+    replacement.extend_from_slice(body);
+    *body = replacement;
 }
 
 #[derive(Serialize)]
@@ -862,6 +879,25 @@ pub enum CapabilityAvailability {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn response_growth_preserves_bytes_without_implicit_reallocation() {
+        let limit = 128;
+        let mut body = zeroize::Zeroizing::new(Vec::new());
+        let chunks: [&[u8]; 4] = [b"first", b"-second", &[7; 70], &[8; 46]];
+        let mut expected = Vec::new();
+        for chunk in chunks {
+            let required = body.len() + chunk.len();
+            super::grow_response_buffer(&mut body, required, limit);
+            let allocation = body.as_ptr();
+            body.extend_from_slice(chunk);
+            expected.extend_from_slice(chunk);
+            assert_eq!(body.as_ptr(), allocation);
+            assert_eq!(body.as_slice(), expected);
+            assert!(body.capacity() <= limit);
+        }
+        assert_eq!(body.len(), limit);
+    }
+
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
         sync::{

@@ -56,6 +56,23 @@ bearer and JWT middleware, concurrency limits, tracing, health, and shutdown.
 This direction prevents HTTP details from leaking into tool schemas and keeps
 the API client usable in isolated contract tests.
 
+Operation identity, description, and risk tier share one process-wide registry.
+Lookup and bounded search use that metadata without constructing operation
+schemas. Input and output schemas initialize independently on first request and
+are then shared; the published tools/list catalog retains its existing cache.
+The final tool-result boundary counts serialized bytes without allocating a
+second whole-result JSON string. The compatibility text remains part of the
+MCP response and is included in that budget. File delivery is applied before
+the final size check, and refusal guidance retains the exact operation's effect
+classification.
+
+The API response accumulator grows by replacing zeroizing allocations explicitly,
+so old buffers are wiped when released. Rejected oversized structured results
+also wipe their retained text and string values after preserving any usable
+file references. This limits copies owned by these boundaries; HTTP libraries,
+JSON conversion, and authorized transport serialization still handle plaintext.
+It is not a guarantee of complete process-memory erasure.
+
 ## Authentication details
 
 The ingress bearer is a randomly generated 256-bit opaque value stored in
