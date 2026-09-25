@@ -260,6 +260,28 @@ pub struct FileConfig {
     pub max_staged: usize,
 }
 
+/// Public delivery facts; excludes routing addresses, identifiers, and credentials.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FileCapabilities {
+    /// Server-owned extension identifier, not an MCP standard version.
+    extension: &'static str,
+    /// Revision of this server's file-transfer contract.
+    version: u8,
+    /// Maximum age in seconds before a staged value expires.
+    ttl_seconds: f64,
+    /// Combined ceiling for staged values and outstanding reservations.
+    max_staged: usize,
+    /// Maximum bytes in a typed upload.
+    max_upload_bytes: usize,
+    /// References resolve only on the process that minted them.
+    instance_local: bool,
+    /// All staged values and transfer authorizations are lost on process restart.
+    lost_on_restart: bool,
+    /// Redemption consumes a transfer attempt; it does not acknowledge recipient receipt.
+    redemption: &'static str,
+}
+
 /// One authorized upload: somewhere to put bytes and the terms they must meet.
 struct UploadTicket {
     staged_id: String,
@@ -480,6 +502,19 @@ pub fn secret_envelope(
 }
 
 impl SecretFilePlane {
+    pub(crate) fn capabilities(&self) -> FileCapabilities {
+        FileCapabilities {
+            extension: "io.cacahuate.infisical.file-transfer",
+            version: 1,
+            ttl_seconds: self.config.ttl.as_secs_f64(),
+            max_staged: self.config.max_staged,
+            max_upload_bytes: MAX_UPLOAD_BYTES,
+            instance_local: true,
+            lost_on_restart: true,
+            redemption: "atMostOneAttempt",
+        }
+    }
+
     #[must_use]
     pub fn new(config: FileConfig) -> Arc<Self> {
         Arc::new(Self {

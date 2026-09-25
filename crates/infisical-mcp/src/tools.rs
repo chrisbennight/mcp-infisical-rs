@@ -119,6 +119,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned, ser::SerializeStruct};
 use serde_json::{Map, Value};
 
+use crate::runtime::{RuntimeCapabilities, RuntimeSettings, SCHEMA_REVISION, Transport};
 use crate::{MCP_PROTOCOL_VERSION, MCP_SERVER_NAME};
 
 pub(crate) const SERVER_INFO_TOOL: &str = "server.info";
@@ -423,18 +424,27 @@ struct ServerInfoOutput {
     /// MCP protocol revision implemented by the server.
     #[schemars(extend("const" = "2025-11-25"))]
     protocol_version: &'static str,
-    /// MCP transport exposed to the private gateway network.
-    #[schemars(extend("const" = "streamable-http"))]
-    transport: &'static str,
+    /// Transport currently serving this handler.
+    transport: Transport,
+    /// HTTP authentication profile; absent when no HTTP profile applies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_profile: Option<crate::runtime::HttpProfile>,
+    /// Discovery schema revision for client cache keys, alongside the build version.
+    schema_revision: &'static str,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServerCapabilitiesOutput {
+    /// Discovery schema revision for client cache keys.
+    schema_revision: &'static str,
     /// Infisical release whose API contract this build targets.
     target_infisical_version: &'static str,
     /// Infisical capabilities compiled into this server build.
     capabilities: Vec<Capability>,
+    /// Effective deployment facts; omitted by offline build-catalog export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<RuntimeCapabilities>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -442,7 +452,7 @@ struct ServerCapabilitiesOutput {
 struct Capability {
     /// Stable capability identifier.
     name: &'static str,
-    /// Whether this deployment can serve the capability through Universal Auth.
+    /// Whether this build implements the capability through Universal Auth; does not prove deployment readiness, permission, or license entitlement.
     available: bool,
     /// Static explanation when the capability is unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -9775,9 +9785,8 @@ struct EnvironmentsListOutput {
 /// The typed operations are not published individually. Their schemas are
 /// charged against a caller's context before its first message, and the whole
 /// set is larger than the window most callers have, while any one turn uses one
-/// or two of them. They stay reachable through the executors, which carry the
-/// operation names for their own tier and hand the rest to
-/// `operations.describe` on demand.
+/// or two of them. Callers discover names through `operations.list` and fetch
+/// one schema through `operations.describe` before using its executor.
 pub(crate) fn catalog() -> ListToolsResult {
     let mut tools = vec![
         read_tool::<EmptyInput, ServerInfoOutput>(
@@ -9848,25 +9857,6 @@ pub(crate) fn tool_tier(name: &str) -> Option<ToolTier> {
         })
         .get(name)
         .copied()
-}
-
-/// Operation names this build serves, in catalog order, for one tier.
-fn operations_in_tier(tier: ToolTier) -> &'static [String] {
-    static BY_TIER: OnceLock<HashMap<ToolTier, Vec<String>>> = OnceLock::new();
-
-    BY_TIER
-        .get_or_init(|| {
-            let mut by_tier: HashMap<ToolTier, Vec<String>> = HashMap::new();
-            for tiered in operation_catalog() {
-                by_tier
-                    .entry(tiered.tier)
-                    .or_default()
-                    .push(tiered.tool.name.to_string());
-            }
-            by_tier
-        })
-        .get(&tier)
-        .map_or(&[], Vec::as_slice)
 }
 
 /// The typed operations an executor can reach, with their tiers.
@@ -11315,6 +11305,8 @@ struct OperationsDescribeOutput {
     tier: &'static str,
     /// What the operation does.
     description: String,
+    /// Deployment prerequisites; permission and entitlement are not probed by discovery.
+    availability: OperationAvailability,
     /// Schema for the executor's `arguments` field.
     #[schemars(with = "SchemaDocument")]
     input_schema: Value,
@@ -11323,11 +11315,24 @@ struct OperationsDescribeOutput {
     output_schema: Value,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct OperationAvailability {
+    /// This operation is compiled into the service.
+    implemented: bool,
+    /// Whether this instance satisfies mandatory local delivery requirements, independent of upstream authorization.
+    enabled_here: bool,
+    /// Whether execution requires a configured file-transfer extension and a file-aware client.
+    requires_file_transfer: bool,
+    /// Upstream permission and license entitlement have not been tested.
+    upstream_access: &'static str,
+}
+
 /// Executor request: an operation name plus that operation's own arguments.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExecuteInput {
-    /// Operation to run. Must be served by this executor's tier.
+    /// Exact name from operations.list; must belong to this executor's tier.
     #[schemars(length(min = 3, max = 128))]
     operation: String,
     /// Arguments matching the operation's input schema from `operations.describe`.
@@ -11404,12 +11409,10 @@ const fn executor_description(tier: ToolTier) -> &'static str {
     match tier {
         ToolTier::Read => {
             "Run one repeatable Infisical read, such as listing projects or reading a secret \
-             value. Set operation to a name from this tool's operation list and arguments to that \
-             operation's own arguments, which operations.describe returns. Example: \
-             {\"operation\": \"projects.list\", \"arguments\": {\"limit\": 20}}. If the name you want is \
-             not in this tool's list, it is either served by another executor, in which case the \
-             refusal names that one, or not served at all, in which case operations.list shows \
-             what is. Safe to repeat: a transport failure can be retried. A read that \
+             value. Use operations.list to find its name and executor, then operations.describe \
+             for its arguments. Example: \
+             {\"operation\": \"projects.list\", \"arguments\": {\"limit\": 20}}. Unknown and wrong-tier \
+             names are rejected before upstream access. Safe to repeat: a transport failure can be retried. A read that \
              Infisical records as an access event is on infisical.readAudited."
         }
         ToolTier::ReadAudited => {
@@ -11495,24 +11498,10 @@ fn executor_output_schema() -> Map<String, Value> {
     schema
 }
 
-/// Build an executor's input schema with its tier's operation names enumerated.
-///
-/// Listing the names in the schema lets a caller recognize a valid operation
-/// instead of recalling one, and lets a client reject a cross-tier call before
-/// it is sent. The names come from the operation catalog, so they cannot drift
-/// from what the executor will actually accept.
+/// Publish the typed executor envelope. Operation names and schemas are fetched
+/// through discovery; dispatch enforces membership in the selected tier.
 fn executor_input_schema(tier: ToolTier) -> Map<String, Value> {
     let mut schema = schema_object::<ExecuteInput>();
-    let operations: Vec<Value> = operations_in_tier(tier)
-        .iter()
-        .map(|name| Value::String(name.clone()))
-        .collect();
-
-    if let Some(Value::Object(properties)) = schema.get_mut("properties")
-        && let Some(Value::Object(operation)) = properties.get_mut("operation")
-    {
-        operation.insert("enum".to_owned(), Value::Array(operations));
-    }
 
     // A file-aware intermediary evaluates this published schema, not the per-operation
     // schemas behind operations.describe, so the file-input annotation must live here:
@@ -11930,10 +11919,20 @@ fn identity_project_additional_privilege_tool_title(name: &str) -> &'static str 
 /// of its own once it is not listed, so accepting one by name would let a
 /// caller run a destructive change with none of the approval treatment its
 /// executor exists to attach.
+#[cfg(test)]
 pub(crate) async fn dispatch(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
     params: CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    dispatch_with_runtime(client, files, &RuntimeSettings::default(), params).await
+}
+
+pub(crate) async fn dispatch_with_runtime(
+    client: &InfisicalClient,
+    files: Option<&SecretFilePlane>,
+    runtime: &RuntimeSettings,
+    mut params: CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     if !is_published_tool(params.name.as_ref()) {
         return Err(McpError::method_not_found::<
@@ -11942,7 +11941,15 @@ pub(crate) async fn dispatch(
     }
 
     let tool = params.name.clone();
-    let result = dispatch_tool(client, files, params).await?;
+    let result = if is_local_discovery(params.name.as_ref()) {
+        dispatch_local(
+            &mut params,
+            runtime.capabilities(client, files),
+            files.is_some(),
+        )?
+    } else {
+        dispatch_tool(client, files, params).await?
+    };
     Ok(enforce_result_budget(tool.as_ref(), files, result))
 }
 
@@ -12121,15 +12128,12 @@ pub(crate) async fn dispatch_tool(
     if let Some(tier) = executor_tier(params.name.as_ref()) {
         return Box::pin(dispatch_executor(client, files, tier, params)).await;
     }
-    if matches!(
-        params.name.as_ref(),
-        SERVER_INFO_TOOL
-            | SERVER_CAPABILITIES_TOOL
-            | TYPES_DESCRIBE_TOOL
-            | OPERATIONS_LIST_TOOL
-            | OPERATIONS_DESCRIBE_TOOL
-    ) {
-        return dispatch_local(&mut params);
+    if is_local_discovery(params.name.as_ref()) {
+        return dispatch_local(
+            &mut params,
+            RuntimeSettings::default().capabilities(client, files),
+            files.is_some(),
+        );
     }
     if is_dynamic_secret_tool(params.name.as_ref()) {
         return dispatch_dynamic_secret_workflow(client, files, &mut params).await;
@@ -12144,7 +12148,7 @@ pub(crate) async fn dispatch_tool(
 /// have. This bound is measured on the serialized result because a structured
 /// result carries its payload twice, once as structured content and once as the
 /// text compatibility form.
-const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_TOOL_RESULT_BYTES: usize = 256 * 1024;
 
 /// Replace an oversized result with an actionable tool error.
 ///
@@ -12329,6 +12333,7 @@ fn dispatch_operations_list(
 
 fn dispatch_operations_describe(
     params: &mut CallToolRequestParams,
+    files_enabled: bool,
 ) -> Result<CallToolResult, McpError> {
     let input = parse_arguments::<OperationsDescribeInput>(
         params,
@@ -12346,12 +12351,33 @@ fn dispatch_operations_describe(
         executor: operation.executor,
         tier: operation.tier,
         description: operation.description.clone(),
+        availability: OperationAvailability {
+            implemented: true,
+            enabled_here: files_enabled || operation.name != CERTIFICATES_IMPORT_TOOL,
+            requires_file_transfer: operation.name == CERTIFICATES_IMPORT_TOOL,
+            upstream_access: "notProbed",
+        },
         input_schema: operation.input_schema.clone(),
         output_schema: operation.output_schema.clone(),
     })
 }
 
-fn dispatch_local(params: &mut CallToolRequestParams) -> Result<CallToolResult, McpError> {
+fn is_local_discovery(name: &str) -> bool {
+    matches!(
+        name,
+        SERVER_INFO_TOOL
+            | SERVER_CAPABILITIES_TOOL
+            | TYPES_DESCRIBE_TOOL
+            | OPERATIONS_LIST_TOOL
+            | OPERATIONS_DESCRIBE_TOOL
+    )
+}
+
+fn dispatch_local(
+    params: &mut CallToolRequestParams,
+    runtime: RuntimeCapabilities,
+    files_enabled: bool,
+) -> Result<CallToolResult, McpError> {
     match params.name.as_ref() {
         SERVER_INFO_TOOL => {
             parse_arguments::<EmptyInput>(params, "server.info does not accept arguments")?;
@@ -12359,16 +12385,18 @@ fn dispatch_local(params: &mut CallToolRequestParams) -> Result<CallToolResult, 
                 name: MCP_SERVER_NAME,
                 version: env!("CARGO_PKG_VERSION"),
                 protocol_version: MCP_PROTOCOL_VERSION,
-                transport: "streamable-http",
+                transport: runtime.transport,
+                http_profile: runtime.http_profile,
+                schema_revision: SCHEMA_REVISION,
             })
         }
         OPERATIONS_LIST_TOOL => dispatch_operations_list(params),
-        OPERATIONS_DESCRIBE_TOOL => dispatch_operations_describe(params),
+        OPERATIONS_DESCRIBE_TOOL => dispatch_operations_describe(params, files_enabled),
         SERVER_CAPABILITIES_TOOL => {
             parse_arguments::<EmptyInput>(params, "server.capabilities does not accept arguments")?;
-            let payload = server_capabilities_payload()
-                .map_err(|_| McpError::internal_error("serialize tool result", None))?;
-            Ok(CallToolResult::structured(payload))
+            let mut output = capabilities();
+            output.runtime = Some(runtime);
+            structured(output)
         }
         TYPES_DESCRIBE_TOOL => {
             let input = parse_arguments::<TypeDescribeInput>(
@@ -16502,8 +16530,10 @@ fn capabilities() -> ServerCapabilitiesOutput {
     capabilities.extend(identity_omission_capabilities());
     capabilities.extend(auxiliary_omission_capabilities());
     ServerCapabilitiesOutput {
+        schema_revision: SCHEMA_REVISION,
         target_infisical_version: TARGET_INFISICAL_VERSION,
         capabilities,
+        runtime: None,
     }
 }
 
@@ -17418,6 +17448,7 @@ mod schema_portability_tests {
             &capabilities,
             &serde_json::json!({
                 "targetInfisicalVersion": "0.150.0",
+                "schemaRevision": crate::runtime::SCHEMA_REVISION,
                 "capabilities": [
                     {"name": "available", "available": true},
                     {"name": "unavailable", "available": false, "reason": "not served"}
@@ -17433,6 +17464,12 @@ mod schema_portability_tests {
                 "executor": "infisical.read",
                 "tier": "read",
                 "description": "List projects",
+                "availability": {
+                    "implemented": true,
+                    "enabledHere": true,
+                    "requiresFileTransfer": false,
+                    "upstreamAccess": "notProbed"
+                },
                 "inputSchema": {"type": "object"},
                 "outputSchema": {"type": "object"}
             })
@@ -17451,7 +17488,7 @@ mod schema_portability_tests {
     #[test]
     fn write_executor_file_annotations_publish_the_runtime_value_domain() {
         let write = published_schema(INFISICAL_WRITE_TOOL, false);
-        let operation = write["properties"]["operation"]["enum"][0].clone();
+        let operation = "secrets.create";
         let file = &write["$defs"]["file"];
         assert!(file.get("x-mcp-file").is_some());
         assert!(validates(
@@ -17461,7 +17498,6 @@ mod schema_portability_tests {
                 "arguments": {"secretValueFile": "mcp-file://gateway/example"}
             })
         ));
-        let operation = write["properties"]["operation"]["enum"][0].clone();
         assert!(validates(
             &write,
             &serde_json::json!({
@@ -17471,7 +17507,6 @@ mod schema_portability_tests {
                 }
             })
         ));
-        let operation = write["properties"]["operation"]["enum"][0].clone();
         assert!(!validates(
             &write,
             &serde_json::json!({
@@ -28129,6 +28164,7 @@ mod tests {
                 "the refusal must not vary with the name it was given"
             );
         }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

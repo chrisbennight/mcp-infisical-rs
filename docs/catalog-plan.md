@@ -40,7 +40,7 @@ typed layer is not removed. It stopped being published as 217 tool schemas and
 became reachable through names dispatch already keys on.
 
 This preserves every property the current design exists to provide. There is no
-arbitrary HTTP method, URL, or body; an operation outside the closed enum is
+arbitrary HTTP method, URL, or body; an operation outside the served registry is
 rejected before the server authenticates to Infisical; and every ownership
 preflight, confirmation
 gate, non-replay guarantee, and redaction boundary executes unchanged.
@@ -107,10 +107,12 @@ This phase is classification-neutral: the published catalog is byte-identical.
 Nine tools are published: the five local discovery tools and one executor per
 operation tier. An executor takes an operation name and that operation's
 arguments, checks both that the operation is served and that it belongs to the
-executor's tier, and routes into the existing dispatch tree. Each executor's
-schema enumerates its own tier's operation names, so a caller recognizes a valid
-name rather than recalling one and a cross-tier call is rejected before it is
-sent. Only a published tool is reachable, so an operation cannot be called by
+executor's tier, and routes into the existing dispatch tree. Operation names
+and purposes are now discovered through `operations.list`; detailed schemas
+come from `operations.describe`. This leaves room for typed deployment
+capabilities within the unchanged catalog budget. Unknown and cross-tier calls
+are rejected by dispatch before upstream access.
+Only a published tool is reachable, so an operation cannot be called by
 name to bypass the annotations its executor carries.
 
 The serialized catalog falls from roughly 934 KB to about 19 KB, before the

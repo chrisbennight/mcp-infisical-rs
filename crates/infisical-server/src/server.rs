@@ -68,7 +68,19 @@ pub fn build_router(
             max_staged: file_settings.max_staged,
         })
     });
-    let handler = InfisicalMcp::new(settings.infisical.clone()).with_files(files.clone());
+    let profile = if settings.identity.is_some() {
+        infisical_mcp::runtime::HttpProfile::Gateway
+    } else {
+        infisical_mcp::runtime::HttpProfile::Standalone
+    };
+    let handler = InfisicalMcp::new(settings.infisical.clone())
+        .with_runtime(infisical_mcp::runtime::RuntimeSettings::Http {
+            profile,
+            max_request_bytes: settings.max_body_bytes,
+            max_concurrent_requests: settings.max_concurrent_requests,
+            request_timeout: settings.request_timeout,
+        })
+        .with_files(files.clone());
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
         Arc::new(LocalSessionManager::default()),
@@ -668,7 +680,9 @@ mod tests {
             "name": "infisical",
             "version": env!("CARGO_PKG_VERSION"),
             "protocolVersion": "2025-11-25",
-            "transport": "streamable-http"
+            "transport": "streamable-http",
+            "httpProfile": "gateway",
+            "schemaRevision": infisical_mcp::runtime::SCHEMA_REVISION
         });
         json!({
             "jsonrpc": "2.0",
@@ -764,8 +778,6 @@ mod tests {
                 "{name} open-world annotation"
             );
         }
-
-        assert_wire_executor_operations(tools);
     }
 
     fn wire_is_local_discovery(name: &str) -> bool {
@@ -779,30 +791,107 @@ mod tests {
         )
     }
 
-    /// Each executor must carry its tier's operation names on the wire.
-    ///
-    /// Without them a caller cannot name an operation without a second round
-    /// trip, and a client cannot reject a cross-tier call before sending it.
-    fn assert_wire_executor_operations(tools: &[Value]) {
-        for tool in tools {
-            let name = tool["name"].as_str().expect("tool name");
-            if wire_is_local_discovery(name) {
-                continue;
-            }
-
-            let operations = tool["inputSchema"]["properties"]["operation"]["enum"]
+    #[tokio::test]
+    async fn operation_discovery_and_executor_refusals_are_local_on_the_wire() {
+        let (router, key, upstream) = test_router().await;
+        let now = unix_timestamp();
+        let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+        for tier in ["read", "readAudited", "write", "destroy"] {
+            let response = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                2,
+                "operations.list",
+                json!({"tier": tier}),
+            )
+            .await;
+            let operations = response["result"]["structuredContent"]["operations"]
                 .as_array()
-                .unwrap_or_else(|| panic!("{name} must enumerate the operations it accepts"));
-            assert!(!operations.is_empty(), "{name} accepts no operation");
-
+                .expect("operation discovery");
+            assert!(!operations.is_empty());
             for operation in operations {
-                let operation = operation.as_str().expect("operation name");
+                assert_eq!(operation["tier"], tier);
+                assert_eq!(operation["executor"], format!("infisical.{tier}"));
                 assert_eq!(
-                    infisical_mcp::executor_for_operation(operation),
-                    Some(name),
-                    "{operation} is offered by {name} but is not served by it"
+                    infisical_mcp::executor_for_operation(operation["name"].as_str().unwrap()),
+                    operation["executor"].as_str()
                 );
             }
+        }
+        for operation in ["secrets.delete", "unknown.operation"] {
+            let response = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                3,
+                "infisical.read",
+                json!({"operation": operation, "arguments": {}}),
+            )
+            .await;
+            assert_eq!(response["error"]["code"], -32602);
+        }
+        let requests = upstream.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/jwks");
+    }
+
+    #[tokio::test]
+    async fn gateway_discovery_reports_effective_limits_and_file_requirements() {
+        for files_enabled in [false, true] {
+            let (router, key, upstream) = if files_enabled {
+                test_router_with_files().await
+            } else {
+                test_router().await
+            };
+            let now = unix_timestamp();
+            let identity = sign_identity(&key, AUDIENCE, now, now + 60);
+            let response = call_authenticated_tool(
+                router.clone(),
+                &identity,
+                2,
+                "server.capabilities",
+                json!({}),
+            )
+            .await;
+            let runtime = &response["result"]["structuredContent"]["runtime"];
+            assert_eq!(runtime["transport"], "streamable-http");
+            assert_eq!(runtime["httpProfile"], "gateway");
+            assert_eq!(runtime["upstreamAccess"], "notProbed");
+            assert_eq!(runtime["limits"]["maxRequestBytes"], 16 * 1024);
+            assert_eq!(runtime["limits"]["maxConcurrentRequests"], 4);
+            assert_eq!(runtime["limits"]["requestTimeoutSeconds"], 5.0);
+            assert_eq!(runtime["delivery"]["uploadReferences"], files_enabled);
+            if files_enabled {
+                assert_eq!(runtime["delivery"]["defaultSecretDelivery"], "reference");
+                assert_eq!(runtime["delivery"]["fileTransfer"]["ttlSeconds"], 60.0);
+                assert_eq!(runtime["delivery"]["fileTransfer"]["maxStaged"], 4);
+                assert_eq!(runtime["delivery"]["fileTransfer"]["lostOnRestart"], true);
+            } else {
+                assert_eq!(runtime["delivery"]["defaultSecretDelivery"], "inlineValue");
+                assert!(runtime["delivery"].get("fileTransfer").is_none());
+            }
+            let described = call_authenticated_tool(
+                router,
+                &identity,
+                3,
+                "operations.describe",
+                json!({"operation": "certificates.import"}),
+            )
+            .await;
+            let availability = &described["result"]["structuredContent"]["availability"];
+            assert_eq!(availability["implemented"], true);
+            assert_eq!(availability["enabledHere"], files_enabled);
+            assert_eq!(availability["requiresFileTransfer"], true);
+            assert_eq!(availability["upstreamAccess"], "notProbed");
+            assert!(
+                upstream
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.url.path() == "/jwks")
+            );
+            assert!(!response.to_string().contains("server-test-client-secret"));
+            assert!(!response.to_string().contains("http://localhost:8000"));
         }
     }
 

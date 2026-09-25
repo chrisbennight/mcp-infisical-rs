@@ -50,11 +50,25 @@ operation carries a typed input and output schema, and the whole set is charged
 against a caller's context before its first message even though any one turn
 uses one or two of them.
 
-An executor takes an `operation` name and that operation's own `arguments`. Its
-input schema enumerates the operation names of its own tier, so a caller
-recognizes a valid name rather than recalling one, and a call cannot cross
-tiers. `operations.list` gives names and purposes; `operations.describe` returns
-one operation's input and output schema on demand.
+An executor takes an `operation` name and that operation's own `arguments`.
+`operations.list` gives names, executors, and purposes; `operations.describe`
+returns one operation's input and output schema on demand. Names are discovered
+there rather than repeated in every connection's initial catalog. Dispatch
+rejects unknown names and wrong-tier calls before contacting Infisical.
+
+`server.info` reports the active transport, HTTP authentication profile, build
+version, and schema revision. `server.capabilities` keeps the compiled capability
+catalog separate from `runtime`, which reports this instance's limits and delivery
+support. `operations.describe.availability` identifies mandatory file-transfer
+requirements and whether this deployment satisfies them. None of these local
+tools probes upstream permissions or license entitlements. Cache schemas by build
+version and schema revision; do not cache deployment readiness across instances.
+
+The service-owned `io.cacahuate.infisical.file-transfer` extension is version 1.
+An enabled instance advertises upload limits, staging capacity, expiry, and
+instance-local storage. A transfer permits at most one redemption attempt and
+does not confirm receipt; restart loses staged values. These are delivery facts,
+not a claim that every MCP client supports the extension.
 
 Nothing accepts an arbitrary HTTP method, URL, or body. An operation name this
 build does not serve is rejected before any upstream call, as is an operation

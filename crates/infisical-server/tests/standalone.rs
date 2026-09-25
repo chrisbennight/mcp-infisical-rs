@@ -145,6 +145,79 @@ async fn stdio_initializes_discovers_and_reads_without_gateway_configuration() {
 }
 
 #[tokio::test]
+async fn stdio_reports_delivery_requirements_without_probing_upstream_access() {
+    let upstream = MockServer::start().await;
+    let mut child = command(&upstream.uri())
+        .args(["--transport", "stdio"])
+        .env("INFISICAL_MCP_MAX_BODY_BYTES", "4096")
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    send_message(&mut child, &initialize()).await;
+    assert!(read_message(&mut reader).await.get("result").is_some());
+    send_message(
+        &mut child,
+        &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    )
+    .await;
+    for (name, arguments) in [
+        ("server.info", json!({})),
+        ("server.capabilities", json!({})),
+        (
+            "operations.describe",
+            json!({"operation":"certificates.import"}),
+        ),
+    ] {
+        send_message(
+            &mut child,
+            &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name":name,"arguments":arguments
+            }}),
+        )
+        .await;
+        let response = read_message(&mut reader).await;
+        assert_eq!(response["result"]["isError"], false);
+        let output = &response["result"]["structuredContent"];
+        match name {
+            "server.info" => {
+                assert_eq!(output["transport"], "stdio");
+                assert!(output.get("httpProfile").is_none());
+                assert!(!output["schemaRevision"].as_str().unwrap().is_empty());
+            }
+            "server.capabilities" => {
+                let runtime = &output["runtime"];
+                assert_eq!(runtime["transport"], "stdio");
+                assert_eq!(runtime["limits"]["maxRequestBytes"], 4096);
+                assert!(runtime["limits"].get("requestTimeoutSeconds").is_none());
+                assert_eq!(runtime["delivery"]["secretModes"], json!(["inlineValue"]));
+                assert_eq!(runtime["delivery"]["resultModes"], json!(["inline"]));
+                assert_eq!(runtime["delivery"]["uploadReferences"], false);
+                assert_eq!(runtime["upstreamAccess"], "notProbed");
+            }
+            _ => {
+                assert_eq!(output["availability"]["implemented"], true);
+                assert_eq!(output["availability"]["enabledHere"], false);
+                assert_eq!(output["availability"]["requiresFileTransfer"], true);
+            }
+        }
+        assert!(
+            !response
+                .to_string()
+                .contains("standalone-test-client-secret")
+        );
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    drop(child.stdin.take());
+    assert!(
+        timeout(DEADLINE, child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}
+
+#[tokio::test]
 async fn stdio_rejects_oversized_and_malformed_messages_without_logging_payloads() {
     for input in [
         format!("{}\n", "x".repeat(2048)),
@@ -332,6 +405,27 @@ async fn standalone_http_authenticates_every_request_and_has_no_session_state() 
         response.json::<Value>().await.unwrap()["result"]["protocolVersion"],
         "2025-11-25"
     );
+    let capabilities = request(
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+            "name":"server.capabilities","arguments":{}
+        }}),
+    )
+    .bearer_auth(BEARER)
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap();
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["runtime"]["httpProfile"],
+        "standalone"
+    );
+    assert_eq!(
+        capabilities["result"]["structuredContent"]["runtime"]["transport"],
+        "streamable-http"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
     let response = request(projects())
         .bearer_auth(BEARER)
         .header("MCP-Protocol-Version", "2025-11-25")
