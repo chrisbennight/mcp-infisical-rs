@@ -5,6 +5,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+#[cfg(test)]
+#[path = "discovery_tests.rs"]
+mod discovery_tests;
+
 use infisical_api::{
     AdditionalPrivilegeChange, AdditionalPrivilegeCreation, AdditionalPrivilegeId,
     AdditionalPrivilegeLifetime, AdditionalPrivilegeSlug, AdditionalPrivilegeStartTime,
@@ -9791,42 +9795,36 @@ pub(crate) fn catalog() -> ListToolsResult {
     let mut tools = vec![
         read_tool::<EmptyInput, ServerInfoOutput>(
             SERVER_INFO_TOOL,
-            "Report this server's version and MCP wire protocol. Answers locally without contacting \
-             Infisical, so it works even when the upstream service does not. For what this build \
-             can and cannot do against Infisical, use server.capabilities.",
+            "Report build, schema revision, MCP protocol, and active transport locally. \
+             Use server.capabilities for deployment limits and compiled support.",
             false,
         )
         .tool,
         read_tool::<EmptyInput, ServerCapabilitiesOutput>(
             SERVER_CAPABILITIES_TOOL,
-            "Find out whether this build supports a workflow before attempting it. Lists every \
-             compiled capability against the pinned Infisical version and gives the reason for \
-             each unavailable one, such as a route requiring a credential this server does not \
-             hold. Use this when an operation you expect is absent from operations.list.",
+            "Report compiled capabilities, unavailable reasons, and this instance's delivery and \
+             limit settings. Answers locally; upstream permission and license entitlement are not probed.",
             false,
         )
         .tool,
         read_tool::<OperationsListInput, OperationsListOutput>(
             OPERATIONS_LIST_TOOL,
-            "Find a served operation and its executor. Results include each operation's name, \
-             tier, and purpose; narrow them by tier or name prefix. Use operations.describe for \
-             the selected operation's argument and output schemas.",
+            "Find an operation by intent, tier, or name prefix. Returns a bounded page and \
+             nextOffset; retain filters when continuing. Fetch schemas with operations.describe.",
             false,
         )
         .tool,
         read_tool::<OperationsDescribeInput, OperationsDescribeOutput>(
             OPERATIONS_DESCRIBE_TOOL,
-            "Return an operation's executor, tier, purpose, and input/output schemas. \
-             Pass values matching inputSchema as the executor's arguments. Use types.describe \
-             for a resource schema instead.",
+            "Get one operation's executor, availability, and schemas. Set includeOutputSchema \
+             false for input only. Pass values matching inputSchema as executor arguments.",
             false,
         )
         .tool,
         read_tool::<TypeDescribeInput, TypeDescribeOutput>(
             TYPES_DESCRIBE_TOOL,
-            "Get the shape of an Infisical resource such as a project, a secret's metadata, or \
-             a dynamic secret. Describes the data model, not a call. For the arguments an \
-             operation takes, use operations.describe instead.",
+            "Get a resource's data model, such as a project, a secret's metadata, or a dynamic secret. \
+             Use operations.describe for a call's arguments and result.",
             false,
         )
         .tool,
@@ -11262,6 +11260,24 @@ struct OperationsListInput {
     /// Return only operations whose name starts with this text, such as `secrets.`.
     #[schemars(length(max = 64))]
     name_prefix: Option<String>,
+    /// Intent words matched against names, descriptions, and reviewed aliases.
+    #[schemars(length(min = 1, max = 128))]
+    query: Option<String>,
+    /// Matching records to skip; retain filters when continuing.
+    #[serde(default)]
+    #[schemars(range(max = 10_000))]
+    offset: usize,
+    /// Maximum records to return.
+    #[serde(default = "default_discovery_limit")]
+    #[schemars(range(min = 1, max = 50))]
+    limit: usize,
+    /// Return complete descriptions instead of brief summaries.
+    #[serde(default)]
+    full_descriptions: bool,
+}
+
+const fn default_discovery_limit() -> usize {
+    10
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -11280,10 +11296,15 @@ struct OperationSummary {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationsListOutput {
-    /// Operations matching the request, in catalog order.
+    /// Matching page, ranked by query relevance then exact name.
     operations: Vec<OperationSummary>,
     /// Operations this build serves in total, before filtering.
     total: usize,
+    /// Operations matching the filters before pagination.
+    matched: usize,
+    /// Continuation offset; absent when this is the final page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -11292,6 +11313,13 @@ struct OperationsDescribeInput {
     /// Exact operation name, as returned by `operations.list`.
     #[schemars(length(min = 3, max = 128))]
     operation: String,
+    /// Include the output schema; false returns only the input schema.
+    #[serde(default = "include_output_schema_by_default")]
+    include_output_schema: bool,
+}
+
+const fn include_output_schema_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -11311,8 +11339,9 @@ struct OperationsDescribeOutput {
     #[schemars(with = "SchemaDocument")]
     input_schema: Value,
     /// Schema of the structured result.
-    #[schemars(with = "SchemaDocument")]
-    output_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<SchemaDocument>")]
+    output_schema: Option<Value>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -11338,8 +11367,7 @@ struct ExecuteInput {
     /// Arguments matching the operation's input schema from `operations.describe`.
     #[serde(default)]
     arguments: Map<String, Value>,
-    /// file returns a resultFile reference to the staged result; needs the
-    /// transfer plane. Default inline.
+    /// file stages a resultFile reference; requires file transfer. Default inline.
     #[serde(default)]
     #[schemars(with = "ResultDeliveryMode")]
     result_delivery: Option<ResultDeliveryMode>,
@@ -11416,38 +11444,31 @@ const fn executor_description(tier: ToolTier) -> &'static str {
              Infisical records as an access event is on infisical.readAudited."
         }
         ToolTier::ReadAudited => {
-            "Run one Infisical read that the service records as an access event, such as listing \
-             audit logs or reading a certificate authority. Same shape as infisical.read. \
+            "Run a read that Infisical records as an access event. \
              Example: {\"operation\": \"auditLogs.list\", \"arguments\": \
              {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"limit\": 20}}. \
-             Because the access is recorded, this is sent exactly once and never replayed, so a \
-             transport failure is not retried for you and repeating the call records a second \
-             access. Reads Infisical does not record are on infisical.read; this server may \
-             still log either."
+             Sent once and never replayed; repeating records another access. Find names with \
+             operations.list and schemas with operations.describe. Repeatable reads use \
+             infisical.read; this server may log either."
         }
         ToolTier::Write => {
-            "Apply one Infisical change this server does not classify as destructive, such as \
-             creating a secret or attaching an authentication method. Example: {\"operation\": \
+            "Apply one change this server does not classify as destructive. Example: {\"operation\": \
              \"secrets.create\", \"arguments\": {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
              \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \
              \"secretValue\": \"sk-live-example\"}}. \
-             Sent exactly once and never replayed: if this call fails you must establish whether \
-             it applied, with a read, before trying again. Some operations here take a confirmation \
-             field and some do not, which is true of both change tiers, so read the operation's \
-             schema rather than expecting a prompt. Deletions and revocations are on \
+             Sent once and never replayed; after failure, read current state before retrying. \
+             Confirmations belong to individual operations; consult operations.describe. \
+             Deletions and revocations use \
              infisical.destroy."
         }
         ToolTier::Destroy => {
-            "Apply one destructive Infisical change, such as deleting a secret or revoking a \
-             credential. Most are irreversible, though a few are recoverable — \
+            "Apply one destructive change. Most are irreversible; \
              environments.delete is a soft delete that environments.restore undoes. Example: {\"operation\": \"secrets.delete\", \"arguments\": \
              {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
-             \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \"confirm\": true}}. Most operations here take an explicit confirmation field and \
-             fail without it, dynamicSecretLeases.create being the exception; some write-tier \
-             operations take one too, so the field is the operation's property and not the \
-             tier's. Sent exactly once and never replayed: if this call fails \
-             you must establish whether it applied, with a read, before trying again. Changes \
-             this server does not classify as destructive are on infisical.write."
+             \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \"confirm\": true}}. Confirmation is required except for \
+             dynamicSecretLeases.create; some write operations require it too. Consult operations.describe. \
+             Sent once and never replayed; after failure, establish whether the effect applied \
+             before retrying. Other changes use infisical.write."
         }
     }
 }
@@ -12303,8 +12324,31 @@ fn dispatch_operations_list(
         params,
         "operations.list arguments do not match the declared schema",
     )?;
+    if input
+        .name_prefix
+        .as_ref()
+        .is_some_and(|prefix| prefix.chars().count() > 64)
+    {
+        return Err(McpError::invalid_params(
+            "namePrefix must contain at most 64 characters",
+            None,
+        ));
+    }
+    if !(1..=50).contains(&input.limit) || input.offset > 10_000 {
+        return Err(McpError::invalid_params(
+            "limit must be between 1 and 50; offset must not exceed 10000",
+            None,
+        ));
+    }
+    let terms = input
+        .query
+        .as_deref()
+        .map(crate::discovery::query_terms)
+        .transpose()
+        .map_err(|message| McpError::invalid_params(message, None))?
+        .unwrap_or_default();
     let described = described_operations();
-    let matching = described
+    let mut matching: Vec<_> = described
         .iter()
         .filter(|operation| {
             input
@@ -12317,17 +12361,39 @@ fn dispatch_operations_list(
                 .as_ref()
                 .is_none_or(|prefix| operation.name.starts_with(prefix))
         })
-        .map(|operation| OperationSummary {
+        .filter_map(|operation| {
+            crate::discovery::score(&terms, &operation.name, &operation.description)
+                .map(|score| (operation, score))
+        })
+        .collect();
+    matching.sort_by(|(left, left_score), (right, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let matched = matching.len();
+    let operations: Vec<_> = matching
+        .into_iter()
+        .skip(input.offset)
+        .take(input.limit)
+        .map(|(operation, _)| OperationSummary {
             name: operation.name.clone(),
             executor: operation.executor,
             tier: operation.tier,
-            description: operation.description.clone(),
+            description: if input.full_descriptions {
+                operation.description.clone()
+            } else {
+                crate::discovery::brief(&operation.description)
+            },
         })
         .collect();
 
     structured(OperationsListOutput {
-        operations: matching,
+        next_offset: (input.offset + operations.len() < matched)
+            .then_some(input.offset + operations.len()),
+        operations,
         total: described.len(),
+        matched,
     })
 }
 
@@ -12339,6 +12405,12 @@ fn dispatch_operations_describe(
         params,
         "operations.describe arguments do not match the declared schema",
     )?;
+    if !(3..=128).contains(&input.operation.chars().count()) {
+        return Err(McpError::invalid_params(
+            "operation must contain between 3 and 128 characters",
+            None,
+        ));
+    }
     let Some(operation) = described_operations()
         .iter()
         .find(|candidate| candidate.name == input.operation)
@@ -12358,7 +12430,9 @@ fn dispatch_operations_describe(
             upstream_access: "notProbed",
         },
         input_schema: operation.input_schema.clone(),
-        output_schema: operation.output_schema.clone(),
+        output_schema: input
+            .include_output_schema
+            .then(|| operation.output_schema.clone()),
     })
 }
 

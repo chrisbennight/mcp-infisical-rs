@@ -56,6 +56,21 @@ returns one operation's input and output schema on demand. Names are discovered
 there rather than repeated in every connection's initial catalog. Dispatch
 rejects unknown names and wrong-tier calls before contacting Infisical.
 
+Discovery defaults to ten brief results. `operations.list` accepts a `query`
+such as `rotate database password`, an exact `namePrefix`, and a `tier`.
+Search is local and deterministic: every query word must match the operation
+name, description, or a reviewed alias. Results rank name matches ahead of alias
+and description matches, with exact names breaking ties. This helps locate a
+workflow; execution still requires its exact operation name.
+
+Use `limit` (1–50) and the returned `nextOffset` to continue, retaining the
+same filters. `matched` is the filtered count and `total` is the catalog count.
+An absent `nextOffset` means the final page. Set `fullDescriptions: true`
+for complete descriptions. Prefixes are limited to 64 characters and intent
+queries to 128 characters; handlers enforce these bounds. Use
+`operations.describe` with `includeOutputSchema: false` for an input-only
+schema. These defaults replace the former unbounded discovery response.
+
 `server.info` reports the active transport, HTTP authentication profile, build
 version, and schema revision. `server.capabilities` keeps the compiled capability
 catalog separate from `runtime`, which reports this instance's limits and delivery
