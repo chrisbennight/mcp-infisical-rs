@@ -708,7 +708,8 @@ impl InfisicalClient {
     ///
     /// # Errors
     ///
-    /// Returns a typed client error after validating all coordinates.
+    /// Returns a typed client error or a response error if the returned name,
+    /// environment, path, or shared-secret type does not match the request.
     pub async fn reveal_secret(
         &self,
         scope: &SecretScope,
@@ -726,7 +727,15 @@ impl InfisicalClient {
                 include_imports: DisabledFlag::False,
             })
             .await?;
-        Ok(response.secret.into())
+        let secret = response.secret;
+        if secret.secret_key != name.as_str()
+            || secret.environment != scope.environment().as_str()
+            || secret.secret_path != scope.path().as_str()
+            || secret.secret_type != "shared"
+        {
+            return Err(ResourceError::InvalidSecretResponse);
+        }
+        Ok(secret.into())
     }
 
     /// Create one current shared secret without exposing Infisical's echoed value.
@@ -928,8 +937,8 @@ mod tests {
     };
 
     use crate::{
-        EnvironmentSlug, InfisicalClient, PageRequest, ProjectId, SecretName, SecretPath,
-        SecretScope, SecretValue, SecretValueMutation,
+        EnvironmentSlug, InfisicalClient, PageRequest, ProjectId, ResourceError, SecretName,
+        SecretPath, SecretScope, SecretValue, SecretValueMutation,
         test_support::{mount_login, settings},
     };
 
@@ -1094,6 +1103,46 @@ mod tests {
             "revealed-secret-canary"
         );
         assert!(!format!("{revealed:?}").contains("revealed-secret-canary"));
+    }
+
+    #[tokio::test]
+    async fn reveal_rejects_each_mismatched_coordinate_without_exposing_the_value() {
+        for (field, value) in [
+            ("secretKey", "OTHER_KEY"),
+            ("environment", "staging"),
+            ("secretPath", "/other"),
+            ("type", "personal"),
+            ("type", "unknown"),
+        ] {
+            let server = MockServer::start().await;
+            mount_login(&server, "reveal-token").await;
+            let mut secret = json!({
+                "id": "secret-1", "environment": "prod", "version": 7,
+                "type": "shared", "secretKey": "STRIPE_API_KEY",
+                "secretValue": "wrong-scope-secret-canary", "secretPath": "/payments"
+            });
+            secret[field] = json!(value);
+            Mock::given(method("GET"))
+                .and(path("/api/v4/secrets/STRIPE_API_KEY"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"secret": secret})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = InfisicalClient::new(settings(&server)).unwrap();
+            let error = client
+                .reveal_secret(
+                    &payments_scope(),
+                    &SecretName::new("STRIPE_API_KEY").unwrap(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                ResourceError::InvalidSecretResponse,
+                "{field}: {value}"
+            );
+            assert!(!format!("{error} {error:?}").contains("wrong-scope-secret-canary"));
+        }
     }
 
     #[tokio::test]

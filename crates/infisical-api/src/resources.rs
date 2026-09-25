@@ -892,6 +892,14 @@ pub enum ResourceError {
     CollectionTooLarge,
     #[error("Infisical collection total did not match the returned records")]
     CollectionCountMismatch,
+    #[error(
+        "Infisical returned a different project; verify the requested project and upstream service"
+    )]
+    InvalidProjectResponse,
+    #[error(
+        "Infisical returned a different secret scope; verify the requested shared-secret coordinates and upstream service"
+    )]
+    InvalidSecretResponse,
     #[error("secret deletion requires explicit confirmation")]
     DeletionNotConfirmed,
     #[error("secret batches must contain between 1 and 50 entries")]

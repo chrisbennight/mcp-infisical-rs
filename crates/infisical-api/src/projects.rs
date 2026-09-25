@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClientError, InfisicalClient, Page, PageRequest, ProjectId, ReadOperation, ResourceError,
+    InfisicalClient, Page, PageRequest, ProjectId, ReadOperation, ResourceError,
     client::{ApiVersion, Endpoint, sealed},
     resources::paginate,
 };
@@ -116,16 +116,24 @@ impl InfisicalClient {
     ///
     /// # Errors
     ///
-    /// Returns a typed client error when Infisical cannot serve the request.
+    /// Returns a typed client error when Infisical cannot serve the request, or
+    /// a response error when the returned project does not match the identifier.
     pub async fn get_project(
         &self,
         project_id: &ProjectId,
-    ) -> Result<Option<Project>, ClientError> {
+    ) -> Result<Option<Project>, ResourceError> {
         let response = self
             .execute_read::<GetProject>(&GetProjectQuery {
                 project_id: project_id.as_str().to_owned(),
             })
             .await?;
+        if response
+            .project
+            .as_ref()
+            .is_some_and(|project| project.id != project_id.as_str())
+        {
+            return Err(ResourceError::InvalidProjectResponse);
+        }
         Ok(response.project)
     }
 
@@ -159,7 +167,7 @@ mod tests {
 
     use super::{Environment, Project};
     use crate::{
-        InfisicalClient, PageRequest, ProjectId,
+        InfisicalClient, PageRequest, ProjectId, ResourceError,
         test_support::{mount_login, settings},
     };
 
@@ -227,6 +235,54 @@ mod tests {
         );
         assert_eq!(environments.total, Some(2));
         assert_eq!(environments.next, Some(PageRequest::new(1, 1).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn project_reads_reject_a_different_project_before_returning_metadata() {
+        let server = MockServer::start().await;
+        mount_login(&server, "read-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects/project-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "project": project_fixture("project-2", "unexpected-project-canary", &[])
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = InfisicalClient::new(settings(&server)).unwrap();
+        let project_id = ProjectId::new("project-1").unwrap();
+        let error = client.get_project(&project_id).await.unwrap_err();
+        assert_eq!(error, ResourceError::InvalidProjectResponse);
+        assert!(!format!("{error} {error:?}").contains("unexpected-project-canary"));
+        assert_eq!(
+            client
+                .list_environments(&project_id, PageRequest::new(0, 10).unwrap())
+                .await
+                .unwrap_err(),
+            ResourceError::InvalidProjectResponse
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absent_project_remains_distinct_from_an_empty_environment_list() {
+        let server = MockServer::start().await;
+        mount_login(&server, "read-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects/project-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"project": null})))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = InfisicalClient::new(settings(&server)).unwrap();
+        let project_id = ProjectId::new("project-1").unwrap();
+        assert_eq!(client.get_project(&project_id).await.unwrap(), None);
+        assert_eq!(
+            client
+                .list_environments(&project_id, PageRequest::new(0, 10).unwrap())
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     fn project_fixture(
