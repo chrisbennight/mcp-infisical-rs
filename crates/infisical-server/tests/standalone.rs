@@ -47,7 +47,7 @@ fn initialize() -> Value {
 
 fn projects() -> Value {
     json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-        "name":"infisical.read","arguments":{"operation":"projects.list","arguments":{"offset":0,"limit":10}}
+        "name":"infisical.read","arguments":{"operation_id":"projects.list","arguments":{"offset":0,"limit":10}}
     }})
 }
 
@@ -116,6 +116,31 @@ async fn stdio_initializes_discovers_and_reads_without_gateway_configuration() {
             .iter()
             .any(|t| t["name"] == "infisical.read")
     );
+    for tool in catalog["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["name"] == "operations.describe" || tool["name"] == "infisical.read")
+    {
+        let properties = tool["inputSchema"]["properties"].as_object().unwrap();
+        assert!(properties.contains_key("operation_id"));
+        for alias in ["operation", "name", "tool", "args"] {
+            assert!(!properties.contains_key(alias));
+        }
+    }
+    for alias in ["name", "operation", "operation_id", "tool"] {
+        send_message(&mut child, &json!({
+            "jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+                "name":"operations.describe","arguments":{alias:"projects.list","includeOutputSchema":false},
+            },
+        })).await;
+        let response = read_message(&mut reader).await;
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(
+            response["result"]["structuredContent"]["name"],
+            "projects.list"
+        );
+    }
     send_message(&mut child, &projects()).await;
     let result = read_message(&mut reader).await;
     assert_eq!(result["result"]["isError"], false);
@@ -233,14 +258,18 @@ async fn stdio_applies_operation_profile_before_upstream_authentication() {
         &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
     )
     .await;
-    send_message(
-        &mut child,
-        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
-            "name":"infisical.read","arguments":{"operation":"secrets.reveal","arguments":{}}
-        }}),
-    )
-    .await;
-    assert!(read_message(&mut reader).await.get("error").is_some());
+    for selector in ["operation_id", "operation", "name", "tool"] {
+        for operation in ["secrets.reveal", "secrets.create"] {
+            send_message(
+                &mut child,
+                &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                    "name":"infisical.readAudited","arguments":{selector:operation,"args":{}}
+                }}),
+            )
+            .await;
+            assert!(read_message(&mut reader).await.get("error").is_some());
+        }
+    }
     send_message(
         &mut child,
         &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{

@@ -96,7 +96,7 @@ After the client initializes the MCP connection and lists tools, call
 
 ```json
 {
-  "operation": "projects.list",
+  "operation_id": "projects.list",
   "arguments": { "offset": 0, "limit": 10 }
 }
 ```
