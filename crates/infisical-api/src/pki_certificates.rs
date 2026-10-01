@@ -491,7 +491,7 @@ struct SearchCertificatesRequest {
     #[serde(skip_serializing)]
     project_id: CertificateAuthorityProjectId,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -986,7 +986,7 @@ fn valid_usage_values(values: Option<&[String]>) -> bool {
 }
 
 fn validate_page(page: PageRequest, returned: usize, total: u64) -> Result<(), ResourceError> {
-    if returned > usize::from(page.limit()) {
+    if returned > page.limit() {
         return Err(ResourceError::InvalidCertificateInventoryResponse);
     }
     let returned =
@@ -996,7 +996,7 @@ fn validate_page(page: PageRequest, returned: usize, total: u64) -> Result<(), R
         .ok_or(ResourceError::InvalidCertificateInventoryResponse)?;
     let consistent = if returned == 0 {
         u64::from(page.offset()) >= total
-    } else if returned < u64::from(page.limit()) {
+    } else if returned < u64::try_from(page.limit()).unwrap_or(u64::MAX) {
         end == total
     } else {
         end <= total
@@ -1602,8 +1602,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, filter, response-contract, or pagination error.
     pub async fn list_certificates(
         &self,
-        request: CertificateListRequest,
+        mut request: CertificateListRequest,
     ) -> Result<Page<Certificate>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read_body::<SearchCertificates>(&SearchCertificatesRequest {
                 project_id: request.project_id.clone(),

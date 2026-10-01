@@ -980,7 +980,8 @@ optional maximum greater than or equal to the default. Lease outputs retain iden
 expiration, owner, status, and timestamps. Provider input objects, arbitrary
 metadata, lease configuration maps, and free-form status details are consumed
 without crossing the MCP boundary. The two unpaginated upstream collection
-routes are exposed as locally bounded pages of at most 100 validated records.
+routes return validated local pages honoring positive requested counts, within
+the upstream response byte bound.
 These operations are reached through executors the manifest classifies high
 risk; lease external-entity identifiers are PII-bearing.
 
@@ -1049,8 +1050,14 @@ IAM, GCP, Azure, OIDC, JWT, LDAP, OCI, Alibaba Cloud, TLS Certificate, and
 SPIFFE authentication administration as unavailable and not implemented. No
 generic provider-auth passthrough is exposed.
 
-Collection inputs default to offset 0 and limit 50, accept at most 100 records,
-and return the next validated offset when another page exists. Resource reads
+Collection inputs default to offset 0 and limit 50 and accept positive explicit
+counts. Local collection pages honor the requested count. Native upstream pages
+clamp to the pinned endpoint's supported maximum: 1,000 for audit logs and
+project identity memberships, and 100 for the other native paginated endpoints.
+Each page reports `requestedLimit`, `effectiveLimit`, and `returned`, and returns
+the next validated offset with the original requested limit when another page
+exists. Offset bounds, response byte bounds, and delivery restrictions still
+apply. Resource reads
 require exact validated project IDs, environment slugs, and absolute normalized
 secret-tree paths where applicable. Upstream failures become tool-level errors
 with a fixed safe category; API failures also include their status and any

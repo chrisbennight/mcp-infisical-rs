@@ -134,7 +134,9 @@ a path. Project, organization, identity, group, membership, environment, and imp
 IDs plus bounded lowercase user handles, project-role slugs, environment slugs,
 secret-tree paths, and positions are validated before requests. Upstream collection routes without pagination
 remain bounded by the response-size limit, and the resource layer exposes a
-validated local page of at most 100 items.
+validated local page honoring the caller's positive count. Native paginated
+routes apply their pinned upstream limit and report requested, effective, and
+returned counts.
 
 App-connection, secret-sync, and secret-rotation inventory is another
 observable-read boundary. The pinned generic routes accept Machine Identity

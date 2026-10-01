@@ -779,7 +779,7 @@ pub(crate) fn paginate<T>(
     let items = all_items
         .into_iter()
         .skip(offset)
-        .take(usize::from(request.limit()))
+        .take(request.limit())
         .collect();
     Ok(Page::new(request, items, Some(total))?)
 }

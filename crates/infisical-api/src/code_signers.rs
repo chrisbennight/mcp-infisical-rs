@@ -556,7 +556,7 @@ pub struct CodeSignerSignature {
 struct ListSignersQuery {
     project_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
 }
@@ -1152,9 +1152,10 @@ fn signer_page_from_wire(
         request.page.offset() < response.total_count
     } else {
         returned_end > response.total_count
-            || (returned < u32::from(request.page.limit()) && returned_end != response.total_count)
+            || (returned < u32::try_from(request.page.limit()).unwrap_or(u32::MAX)
+                && returned_end != response.total_count)
     };
-    if response.signers.len() > usize::from(request.page.limit()) || pagination_is_incoherent {
+    if response.signers.len() > request.page.limit() || pagination_is_incoherent {
         return Err(ResourceError::InvalidCodeSignerResponse);
     }
     let signers = response
@@ -1626,8 +1627,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, response-contract, or pagination error.
     pub async fn list_code_signers(
         &self,
-        request: CodeSignerListRequest,
+        mut request: CodeSignerListRequest,
     ) -> Result<Page<CodeSigner>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read::<ListSigners>(&ListSignersQuery {
                 project_id: request.project_id.as_str().to_owned(),

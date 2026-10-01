@@ -620,7 +620,7 @@ fn validate_base64(
 struct ListKmsKeysQuery {
     project_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     order_by: KmsOrderBy,
     order_direction: KmsOrderDirection,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1138,8 +1138,9 @@ impl InfisicalClient {
     /// Returns a typed client, response-contract, or pagination error.
     pub async fn list_kms_keys(
         &self,
-        request: KmsKeyListRequest,
+        mut request: KmsKeyListRequest,
     ) -> Result<Page<KmsKey>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read::<ListKmsKeys>(&ListKmsKeysQuery {
                 project_id: request.project_id.as_str().to_owned(),
@@ -1160,7 +1161,7 @@ impl InfisicalClient {
         let end = offset
             .checked_add(returned)
             .ok_or(ResourceError::InvalidKmsResponse)?;
-        let returned_below_limit = response.keys.len() < usize::from(request.page.limit());
+        let returned_below_limit = response.keys.len() < request.page.limit();
         let page_fits_total = if returned == 0 {
             offset >= response.total_count
         } else if returned_below_limit {
@@ -1168,7 +1169,7 @@ impl InfisicalClient {
         } else {
             end <= response.total_count
         };
-        if response.keys.len() > usize::from(request.page.limit()) || !page_fits_total {
+        if response.keys.len() > request.page.limit() || !page_fits_total {
             return Err(ResourceError::InvalidKmsResponse);
         }
         let keys = response
@@ -1968,7 +1969,7 @@ mod tests {
         keys: Value,
         total_count: u64,
         offset: u32,
-        limit: u16,
+        limit: usize,
     ) -> Result<crate::Page<crate::KmsKey>, ResourceError> {
         let server = MockServer::start().await;
         mount_login(&server, "kms-list-contract-token").await;

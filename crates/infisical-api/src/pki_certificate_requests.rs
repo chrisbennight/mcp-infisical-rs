@@ -244,7 +244,7 @@ fn normalize_profile_ids(
 struct SearchCertificateRequestsBody {
     project_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -517,7 +517,7 @@ fn request_matches(request: &CertificateRequest, input: &CertificateRequestListR
 }
 
 fn validate_page(page: PageRequest, returned: usize, total: u64) -> Result<(), ResourceError> {
-    if returned > usize::from(page.limit()) {
+    if returned > page.limit() {
         return Err(ResourceError::InvalidCertificateRequestInventoryResponse);
     }
     let returned = u64::try_from(returned)
@@ -527,7 +527,7 @@ fn validate_page(page: PageRequest, returned: usize, total: u64) -> Result<(), R
         .ok_or(ResourceError::InvalidCertificateRequestInventoryResponse)?;
     let consistent = if returned == 0 {
         u64::from(page.offset()) >= total
-    } else if returned < u64::from(page.limit()) {
+    } else if returned < u64::try_from(page.limit()).unwrap_or(u64::MAX) {
         end == total
     } else {
         end <= total
@@ -599,8 +599,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, filter, response-contract, or pagination error.
     pub async fn list_certificate_requests(
         &self,
-        request: CertificateRequestListRequest,
+        mut request: CertificateRequestListRequest,
     ) -> Result<Page<CertificateRequest>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read_body::<SearchCertificateRequests>(
                 &SearchCertificateRequestsBody {

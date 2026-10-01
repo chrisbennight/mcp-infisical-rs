@@ -435,7 +435,7 @@ pub(crate) const SSH_HOST_GROUP_HOSTS_LIST_TOOL: &str = "sshHostGroups.hosts.lis
 pub(crate) const SSH_HOST_GROUP_HOSTS_ADD_TOOL: &str = "sshHostGroups.hosts.add";
 pub(crate) const SSH_HOST_GROUP_HOSTS_REMOVE_TOOL: &str = "sshHostGroups.hosts.remove";
 
-const DEFAULT_PAGE_LIMIT: u16 = 50;
+const DEFAULT_PAGE_LIMIT: usize = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -572,7 +572,7 @@ impl JsonSchema for SchemaDocument {
     }
 }
 
-fn default_page_limit() -> u16 {
+fn default_page_limit() -> usize {
     DEFAULT_PAGE_LIMIT
 }
 
@@ -634,8 +634,8 @@ struct AuditLogsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl AuditLogsListInput {
@@ -695,8 +695,8 @@ struct AppConnectionsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl AppConnectionsListInput {
@@ -1855,8 +1855,8 @@ struct ProjectsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl ProjectsListInput {
@@ -1905,8 +1905,8 @@ struct OrganizationRolesListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl OrganizationRolesListInput {
@@ -1935,8 +1935,8 @@ struct GroupsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl GroupsListInput {
@@ -1978,8 +1978,8 @@ struct GroupMembersListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl GroupMembersListInput {
@@ -2007,8 +2007,8 @@ struct IdentityProjectAdditionalPrivilegesListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl IdentityProjectAdditionalPrivilegesListInput {
@@ -2307,8 +2307,8 @@ struct GroupProjectsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl GroupProjectsListInput {
@@ -2658,8 +2658,8 @@ struct ProjectPageInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl ProjectPageInput {
@@ -2691,8 +2691,8 @@ struct SecretScopePageInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2716,8 +2716,8 @@ struct SecretMetadataListInput {
     offset: u32,
     /// Maximum MCP records; does not reduce upstream bytes.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Filter upstream by up to sixteen unique lowercase hyphen-separated tag slugs, each at most 64 characters.
     #[serde(default)]
     #[schemars(length(max = 16))]
@@ -3103,8 +3103,8 @@ struct IdentityPageInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl IdentityPageInput {
@@ -3225,8 +3225,8 @@ struct ProjectMembershipPageInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl ProjectMembershipPageInput {
@@ -3586,8 +3586,8 @@ struct UniversalAuthClientSecretsListInput {
     offset: u32,
     /// Maximum metadata records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl UniversalAuthClientSecretsListInput {
@@ -3968,8 +3968,8 @@ struct TokenAuthTokensListInput {
     offset: u32,
     /// Maximum metadata records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl TokenAuthTokensListInput {
@@ -4268,8 +4268,8 @@ struct SecretImportsListInput {
     offset: u32,
     /// Maximum records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl SecretImportsListInput {
@@ -4710,8 +4710,8 @@ struct DynamicSecretsListInput {
     offset: u32,
     /// Maximum configurations returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl DynamicSecretsListInput {
@@ -4837,8 +4837,8 @@ struct DynamicSecretLeasesListInput {
     offset: u32,
     /// Maximum leases returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
 }
 
 impl DynamicSecretLeasesListInput {
@@ -6113,8 +6113,8 @@ struct CodeSignersListInput {
     offset: u32,
     /// Maximum signers returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional bounded signer-name or certificate-common-name search.
     #[schemars(length(min = 1, max = 255))]
     search: Option<String>,
@@ -6663,8 +6663,8 @@ struct CodeSignerApprovalRequestsListInput {
     offset: u32,
     /// Maximum requests returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional unique normalized status filters.
     #[serde(default)]
     #[schemars(length(max = 4))]
@@ -6797,8 +6797,8 @@ struct CodeSignerOperationsListInput {
     offset: u32,
     /// Maximum operations returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional exact operation outcome.
     status: Option<CodeSignerOperationStatus>,
 }
@@ -7171,8 +7171,8 @@ struct CertificatesListInput {
     offset: u32,
     /// Maximum certificates returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional bounded SAN, common-name, identifier, or serial-number search.
     #[schemars(length(min = 1, max = 255))]
     search: Option<String>,
@@ -7632,8 +7632,8 @@ struct CertificateRequestsListInput {
     offset: u32,
     /// Maximum requests returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional bounded common-name or subject-alternative-name search.
     #[schemars(length(min = 1, max = 255))]
     search: Option<String>,
@@ -7796,8 +7796,8 @@ struct CertificatePoliciesListInput {
     offset: u32,
     /// Maximum policies returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional bounded name or description search term.
     #[schemars(length(min = 1, max = 255))]
     search: Option<String>,
@@ -8185,8 +8185,8 @@ struct CertificateProfilesListInput {
     offset: u32,
     /// Maximum profiles returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional bounded profile search term.
     #[schemars(length(min = 1, max = 255))]
     search: Option<String>,
@@ -8687,8 +8687,8 @@ struct CertificateProfileCertificatesListInput {
     offset: u32,
     /// Maximum certificates returned by this page.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Optional certificate lifecycle-state filter.
     status: Option<CertificateProfileCertificateStatus>,
     /// Optional bounded common-name or serial search.
@@ -9321,7 +9321,7 @@ impl Serialize for DynamicSecretLeaseCreateOutput {
     }
 }
 
-fn page_request(offset: u32, limit: u16) -> Result<PageRequest, McpError> {
+fn page_request(offset: u32, limit: usize) -> Result<PageRequest, McpError> {
     PageRequest::new(offset, limit).map_err(invalid_input)
 }
 
@@ -27758,6 +27758,46 @@ mod tests {
             1
         );
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_collection_counts_select_available_rows_without_a_local_ceiling() {
+        let server = MockServer::start().await;
+        let client = client(&server).await;
+        let projects: Vec<Value> = (0..300)
+            .map(|index| project(&format!("project-{index}"), &json!([])))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"projects":projects})))
+            .expect(3)
+            .mount(&server)
+            .await;
+        for (arguments, expected, requested) in [
+            (json!({}), 50, 50),
+            (json!({"limit":200}), 200, 200),
+            (json!({"limit":usize::MAX}), 300, usize::MAX),
+        ] {
+            let result = dispatch(
+                &client,
+                None,
+                request(
+                    "infisical.read",
+                    &json!({
+                        "operation_id":"projects.list", "arguments":arguments
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            let page = result.structured_content.unwrap();
+            assert_eq!(page["items"].as_array().unwrap().len(), expected);
+            assert_eq!(page["requestedLimit"], requested);
+            assert_eq!(page["effectiveLimit"], requested);
+            assert_eq!(page["returned"], expected);
+            assert_eq!(page["next"].is_null(), expected == 300);
+        }
     }
 
     #[tokio::test]

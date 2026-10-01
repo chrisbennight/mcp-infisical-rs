@@ -71,6 +71,9 @@ pub(crate) fn projects(page: Page<Project>, details: bool) -> Page<ProjectSummar
             .collect(),
         next: page.next,
         total: page.total,
+        requested_limit: page.requested_limit,
+        effective_limit: page.effective_limit,
+        returned: page.returned,
     }
 }
 
@@ -97,5 +100,8 @@ pub(crate) fn secrets(
             .collect(),
         next: page.next,
         total: page.total,
+        requested_limit: page.requested_limit,
+        effective_limit: page.effective_limit,
+        returned: page.returned,
     }
 }
