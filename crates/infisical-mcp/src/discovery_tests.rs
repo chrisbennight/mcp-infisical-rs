@@ -97,7 +97,6 @@ fn discovery_rejects_advertised_bounds_without_reflecting_values() {
         json!({"query": "discovery-input-canary".repeat(7)}),
         json!({"query": " ?! "}),
         json!({"limit": 0}),
-        json!({"limit": 51}),
         json!({"offset": 10_001}),
     ] {
         let error =
@@ -175,6 +174,160 @@ fn input_only_schema_and_brief_pages_reduce_serialized_results() {
         let compatibility: Value =
             serde_json::from_str(serialized["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(compatibility, serialized["structuredContent"]);
+    }
+}
+
+#[test]
+fn explicit_discovery_limits_are_honored_without_a_request_ceiling() {
+    let output = list(json!({"limit": 100})).structured_content.unwrap();
+    assert_eq!(output["operations"].as_array().unwrap().len(), 100);
+    let all = list(json!({"limit": usize::MAX}))
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        all["operations"].as_array().unwrap().len(),
+        described_operations().len()
+    );
+    assert!(all.get("nextOffset").is_none());
+    let schema = schema_value::<OperationsListInput>();
+    assert!(schema["properties"]["limit"].get("maximum").is_none());
+    assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+}
+
+#[test]
+fn describe_identifier_aliases_are_hidden_and_conflicts_are_rejected() {
+    for name in ["operation_id", "name", "operation", "tool"] {
+        let result = dispatch_operations_describe(
+            &mut request(OPERATIONS_DESCRIBE_TOOL, json!({name: "secrets.create"})),
+            true,
+        )
+        .unwrap();
+        assert_eq!(result.structured_content.unwrap()["name"], "secrets.create");
+    }
+    assert!(
+        dispatch_operations_describe(
+            &mut request(
+                OPERATIONS_DESCRIBE_TOOL,
+                json!({"operation_id":"secrets.create", "name":"secrets.reveal"})
+            ),
+            true,
+        )
+        .is_err()
+    );
+    for schema in [
+        schema_value::<OperationsDescribeInput>(),
+        schema_value::<ExecuteInput>(),
+    ] {
+        let properties = schema["properties"].as_object().unwrap();
+        assert!(properties.contains_key("operation_id"));
+        for name in ["name", "operation", "tool", "args"] {
+            assert!(!properties.contains_key(name), "{name}");
+        }
+    }
+    let envelope: ExecuteInput = serde_json::from_value(
+        json!({"name":"secrets.create", "args":{"projectId":"test-project"}}),
+    )
+    .unwrap();
+    assert_eq!(envelope.operation, "secrets.create");
+    assert_eq!(envelope.arguments["projectId"], "test-project");
+}
+
+#[test]
+fn intent_search_can_supply_the_exact_contract_without_another_describe_call() {
+    let expanded = list(json!({
+        "namePrefix":"secrets.metadata.list", "limit":1, "includeInputSchema":true,
+    }))
+    .structured_content
+    .unwrap();
+    let row = &expanded["operations"][0];
+    assert_eq!(row["name"], "secrets.metadata.list");
+    assert_eq!(row["executor"], "infisical.read");
+    let described = dispatch_operations_describe(
+        &mut request(
+            OPERATIONS_DESCRIBE_TOOL,
+            json!({"operation_id":"secrets.metadata.list", "includeOutputSchema":false}),
+        ),
+        true,
+    )
+    .unwrap()
+    .structured_content
+    .unwrap();
+    assert_eq!(row["inputSchema"], described["inputSchema"]);
+    let arguments = json!({"projectId":"test-project","environment":"prod","path":"/"});
+    assert!(
+        jsonschema::validator_for(&row["inputSchema"])
+            .unwrap()
+            .is_valid(&arguments)
+    );
+    let ordinary = list(json!({"namePrefix":"secrets.metadata.list","limit":1}))
+        .structured_content
+        .unwrap();
+    assert!(ordinary["operations"][0].get("inputSchema").is_none());
+}
+
+#[test]
+fn metadata_read_and_secret_write_preparation_use_one_smaller_discovery_reply() {
+    for (name, executor, arguments) in [
+        (
+            "secrets.metadata.list",
+            "infisical.read",
+            json!({"projectId":"test-project","environment":"prod","path":"/"}),
+        ),
+        (
+            "secrets.create",
+            "infisical.write",
+            json!({
+                "target":{"projectId":"test-project","environment":"prod","path":"/","name":"EXAMPLE"},
+                "secretValueFile":"mcp-file://infisical/example-upload",
+            }),
+        ),
+    ] {
+        let expanded = list(json!({"namePrefix":name,"limit":1,"includeInputSchema":true}));
+        let row = &expanded.structured_content.as_ref().unwrap()["operations"][0];
+        assert_eq!(row["name"], name);
+        assert_eq!(row["executor"], executor);
+        assert!(
+            jsonschema::validator_for(&row["inputSchema"])
+                .unwrap()
+                .is_valid(&arguments)
+        );
+        let brief = list(json!({"namePrefix":name,"limit":1}));
+        let full = dispatch_operations_describe(
+            &mut request(OPERATIONS_DESCRIBE_TOOL, json!({"operation_id":name})),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            row["inputSchema"],
+            full.structured_content.as_ref().unwrap()["inputSchema"]
+        );
+        let compact_bytes = serde_json::to_vec(&expanded).unwrap().len();
+        let separate_bytes =
+            serde_json::to_vec(&brief).unwrap().len() + serde_json::to_vec(&full).unwrap().len();
+        assert!(
+            compact_bytes < separate_bytes,
+            "{name}: {compact_bytes} >= {separate_bytes}"
+        );
+        let serialized = serde_json::to_value(&expanded).unwrap();
+        let text: Value =
+            serde_json::from_str(serialized["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, serialized["structuredContent"]);
+        assert!(!serialized.to_string().contains("example-upload"));
+    }
+}
+
+#[test]
+fn secret_read_pointer_names_explain_the_governed_operation() {
+    for name in ["secrets.get", "secrets.list"] {
+        let error = dispatch_operations_describe(
+            &mut request(OPERATIONS_DESCRIBE_TOOL, json!({"operation_id":name})),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("secrets.reveal"));
+        assert!(error.message.contains("audited credential read"));
+        assert!(error.message.contains("secrets.metadata.list"));
+        assert!(operation_definition(name).is_none());
     }
 }
 

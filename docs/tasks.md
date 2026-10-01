@@ -6,11 +6,14 @@ Compiled support does not prove that the configured Infisical machine identity
 has permission or that the upstream edition enables a feature. Infisical makes
 those decisions; a gateway may impose additional caller policy.
 
-Use `operations.list` to search by intent, then `operations.describe` for the
-selected operation's executor and exact argument schema. Keep the search filters
-when following `nextOffset`. Set `includeOutputSchema: false` when only the
-arguments are needed. A disabled startup-profile operation cannot be enabled by
-choosing another executor or supplying a confirmation field.
+Use `operations.list` to search by intent. Set `includeInputSchema: true` to
+receive the executor and exact argument schema with each match and proceed
+directly to a call. Keep the search filters when following `nextOffset`;
+explicit positive limits are honored. For a full contract, call
+`operations.describe` with `operation_id`; set `includeOutputSchema: false`
+when only the arguments are needed. Executors also use `operation_id` and
+`arguments`. A disabled startup-profile operation cannot be enabled by choosing
+another executor or supplying a confirmation field.
 
 ## Choose a connection
 

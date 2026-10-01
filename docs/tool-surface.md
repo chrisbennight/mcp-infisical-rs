@@ -50,11 +50,17 @@ operation carries a typed input and output schema, and the whole set is charged
 against a caller's context before its first message even though any one turn
 uses one or two of them.
 
-An executor takes an `operation` name and that operation's own `arguments`.
+An executor takes an `operation_id` and that operation's own `arguments`.
 `operations.list` gives names, executors, and purposes; `operations.describe`
 returns one operation's input and output schema on demand. Names are discovered
 there rather than repeated in every connection's initial catalog. Dispatch
 rejects unknown names and wrong-tier calls before contacting Infisical.
+
+Describe and executor calls also accept hidden `name`, `operation`, or `tool`
+spellings for `operation_id`; executors accept `args` for `arguments`.
+Supplying multiple spellings fails before authentication or submission.
+Published schemas show the canonical fields, and nested operation inputs keep
+their own field names.
 
 Discovery defaults to ten brief results. `operations.list` accepts a `query`
 such as `rotate database password`, an exact `namePrefix`, and a `tier`.
@@ -63,13 +69,15 @@ name, description, or a reviewed alias. Results rank name matches ahead of alias
 and description matches, with exact names breaking ties. This helps locate a
 workflow; execution still requires its exact operation name.
 
-Use `limit` (1–50) and the returned `nextOffset` to continue, retaining the
+Use a positive `limit` and the returned `nextOffset` to continue, retaining the
 same filters. `matched` is the filtered count and `total` is the catalog count.
 An absent `nextOffset` means the final page. Set `fullDescriptions: true`
 for complete descriptions. Prefixes are limited to 64 characters and intent
-queries to 128 characters; handlers enforce these bounds. Use
-`operations.describe` with `includeOutputSchema: false` for an input-only
-schema. These defaults replace the former unbounded discovery response.
+queries to 128 characters; handlers enforce these bounds. Set
+`includeInputSchema: true` to receive each selected operation's exact input
+schema in the discovery reply. The default omits schemas for compact discovery.
+Use `operations.describe` with `includeOutputSchema: false` for an input-only
+schema or to inspect execution and deployment details.
 
 ### Collection cost and projections
 

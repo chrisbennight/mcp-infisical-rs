@@ -124,8 +124,15 @@ def validate_dockerfile(text: str) -> list[str]:
         for instruction in instructions
         if instruction.upper().startswith("FROM ")
     ]
-    if len(stages) != 2:
-        errors.append("Dockerfile must contain exactly one builder and one runtime stage")
+    if len(stages) != 3 or not all(
+        stage.endswith(" AS " + name)
+        for stage, name in zip(stages, ("builder", "runtime-libraries", "runtime"))
+    ):
+        errors.append("Dockerfile must contain the builder, runtime-libraries, and runtime stages in order")
+    if not stages or not stages[-1].startswith(
+        "FROM gcr.io/distroless/base-nossl-debian12:nonroot@sha256:"
+    ):
+        errors.append("Dockerfile final stage must use the pinned no-OpenSSL non-root runtime")
     for stage in stages:
         if not re.search(r"@sha256:[0-9a-f]{64}(?:\s|$)", stage):
             errors.append(f"container base is not digest-pinned: {stage}")
@@ -133,7 +140,13 @@ def validate_dockerfile(text: str) -> list[str]:
         "locked release build": lambda instruction: instruction.startswith("RUN ")
         and "cargo auditable build --release --locked --bin mcp-infisical-rs" in instruction,
         "distroless non-root runtime": lambda instruction: instruction.startswith("FROM ")
-        and "gcr.io/distroless/cc-debian12:nonroot@sha256:" in instruction,
+        and "gcr.io/distroless/base-nossl-debian12:nonroot@sha256:" in instruction,
+        "GCC support library": lambda instruction: instruction ==
+        "COPY --from=runtime-libraries /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1",
+        "GCC package records": lambda instruction: instruction ==
+        "COPY --from=runtime-libraries /var/lib/dpkg/status.d/libgcc-s1 /var/lib/dpkg/status.d/libgcc-s1.md5sums /var/lib/dpkg/status.d/gcc-12-base /var/lib/dpkg/status.d/gcc-12-base.md5sums /var/lib/dpkg/status.d/",
+        "GCC copyright notices": lambda instruction: instruction ==
+        "COPY --from=runtime-libraries /usr/share/doc/gcc-12-base/ /usr/share/doc/gcc-12-base/",
         "license notices": lambda instruction: instruction
         == "COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/mcp-infisical-rs/",
         "explicit non-root user": lambda instruction: instruction

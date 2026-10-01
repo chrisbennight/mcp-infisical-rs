@@ -9366,8 +9366,8 @@ pub(crate) fn catalog() -> ListToolsResult {
         .materialize(),
         read_tool::<OperationsListInput, OperationsListOutput>(
             OPERATIONS_LIST_TOOL,
-            "Find an operation by intent, tier, or name prefix. Returns a bounded page and \
-             nextOffset; retain filters when continuing. Fetch schemas with operations.describe.",
+            "Find operations by intent, tier, or prefix. Set includeInputSchema true for usable \
+             arguments in this reply; otherwise use operations.describe. Keep filters with nextOffset.",
             false,
         )
         .materialize(),
@@ -10823,11 +10823,14 @@ struct OperationsListInput {
     offset: usize,
     /// Maximum records to return.
     #[serde(default = "default_discovery_limit")]
-    #[schemars(range(min = 1, max = 50))]
+    #[schemars(range(min = 1))]
     limit: usize,
     /// Return complete descriptions instead of brief summaries.
     #[serde(default)]
     full_descriptions: bool,
+    /// Include the exact input schema so a selected match can be executed directly.
+    #[serde(default)]
+    include_input_schema: bool,
 }
 
 const fn default_discovery_limit() -> usize {
@@ -10845,6 +10848,10 @@ struct OperationSummary {
     tier: &'static str,
     /// What the operation does.
     description: String,
+    /// Arguments schema, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<SchemaDocument>")]
+    input_schema: Option<Value>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -10866,6 +10873,12 @@ struct OperationsListOutput {
 struct OperationsDescribeInput {
     /// Exact operation name, as returned by `operations.list`.
     #[schemars(length(min = 3, max = 128))]
+    #[serde(
+        rename = "operation_id",
+        alias = "operation",
+        alias = "name",
+        alias = "tool"
+    )]
     operation: String,
     /// Include the output schema; false returns only the input schema.
     #[serde(default = "include_output_schema_by_default")]
@@ -10920,11 +10933,17 @@ struct OperationAvailability {
 struct ExecuteInput {
     /// Name from operations.list, belonging to this executor's tier.
     #[schemars(length(min = 3, max = 128))]
+    #[serde(
+        rename = "operation_id",
+        alias = "operation",
+        alias = "name",
+        alias = "tool"
+    )]
     operation: String,
-    /// Arguments per operations.describe input schema.
-    #[serde(default)]
+    /// Arguments matching the discovered schema.
+    #[serde(default, alias = "args")]
     arguments: Map<String, Value>,
-    /// file requires transfer and returns resultFile; default inline.
+    /// file returns resultFile through transfer; default inline.
     #[serde(default)]
     #[schemars(with = "ResultDeliveryMode")]
     result_delivery: Option<ResultDeliveryMode>,
@@ -11092,38 +11111,35 @@ fn executor_tools() -> Vec<Tool> {
 const fn executor_description(tier: ToolTier) -> &'static str {
     match tier {
         ToolTier::Read => {
-            "Run a repeatable read, such as listing projects or reading a secret value. \
-             Find names and executors with operations.list, arguments with operations.describe. Example: \
-             {\"operation\": \"projects.list\", \"arguments\": {\"limit\": 20}}. Unknown and wrong-tier \
-             names are rejected before upstream access. Safe to repeat: a transport failure can be retried. A read that \
-             Infisical records as an access event is on infisical.readAudited."
+            "Run a repeatable metadata read. Discover with operations.list or operations.describe. \
+             Example: {\"operation_id\": \"projects.list\", \"arguments\": {\"limit\": 20}}. \
+             Names and tier are checked before upstream access. Safe to repeat after transport failure. \
+             Audited reads, including secrets.reveal, use infisical.readAudited."
         }
         ToolTier::ReadAudited => {
             "Run a read that Infisical records as an access event. \
-             Example: {\"operation\": \"auditLogs.list\", \"arguments\": \
+             Example: {\"operation_id\": \"auditLogs.list\", \"arguments\": \
              {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"limit\": 20}}. \
-             Sent once and never replayed; repeating records another access. Find names with \
-             operations.list and schemas with operations.describe. Repeatable reads use \
-             infisical.read; this server may log either."
+             Sent once and never replayed; repeating records another access. Discover with \
+             operations.list or operations.describe. Repeatable reads use infisical.read."
         }
         ToolTier::Write => {
-            "Apply one change this server does not classify as destructive. Example: {\"operation\": \
+            "Apply one non-destructive change. Example: {\"operation_id\": \
              \"secrets.create\", \"arguments\": {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
              \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \
              \"secretValue\": \"sk-live-example\"}}. \
              Sent once and never replayed; after failure, read current state before retrying. \
-             Confirmations belong to individual operations; consult operations.describe. \
-             Deletions and revocations use \
-             infisical.destroy."
+             Consult operations.describe for confirmations. \
+             Deletions and revocations use infisical.destroy."
         }
         ToolTier::Destroy => {
             "Apply one destructive change. Most are irreversible; \
-             environments.delete is a soft delete that environments.restore undoes. Example: {\"operation\": \"secrets.delete\", \"arguments\": \
+             environments.delete is a soft delete that environments.restore undoes. Example: {\"operation_id\": \"secrets.delete\", \"arguments\": \
              {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
              \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \"confirm\": true}}. Confirmation is required except for \
-             dynamicSecretLeases.create; some write operations require it too. Consult operations.describe. \
-             Sent once and never replayed; after failure, establish whether the effect applied \
-             before retrying. Other changes use infisical.write."
+             dynamicSecretLeases.create; some writes require it too. Consult operations.describe. \
+             Sent once and never replayed; reconcile the effect before retrying after failure. \
+             Other changes use infisical.write."
         }
     }
 }
@@ -11636,8 +11652,15 @@ pub(crate) async fn dispatch_with_profile(
     let operation = params
         .arguments
         .as_ref()
-        .and_then(|arguments| arguments.get("operation"))
+        .and_then(|arguments| {
+            arguments
+                .get("operation_id")
+                .or_else(|| arguments.get("operation"))
+                .or_else(|| arguments.get("name"))
+                .or_else(|| arguments.get("tool"))
+        })
         .and_then(Value::as_str)
+        .filter(|_| !is_local_discovery(tool.as_ref()))
         .and_then(operation_definition);
     if operation.is_some_and(|operation| !profile.allows(operation.policy)) {
         return Err(unknown_operation());
@@ -11697,6 +11720,16 @@ fn executor_tier(name: &str) -> Option<ToolTier> {
         .find(|tier| tier.executor() == name)
 }
 
+fn unknown_operation_name(name: &str) -> McpError {
+    if matches!(name, "secrets.get" | "secrets.list") {
+        return McpError::invalid_params(
+            "secrets.get and secrets.list are not served; use secrets.reveal for one exact audited credential read, or secrets.metadata.list for value-free inventory",
+            None,
+        );
+    }
+    unknown_operation()
+}
+
 /// Run one operation named by an executor request.
 ///
 /// The operation must be one this build serves and must belong to the tier of
@@ -11716,7 +11749,7 @@ async fn dispatch_executor(
     )?;
 
     let Some(declared) = tool_tier(&request.operation) else {
-        return Err(unknown_operation());
+        return Err(unknown_operation_name(&request.operation));
     };
     if declared != tier {
         return Err(McpError::invalid_params(
@@ -11940,7 +11973,10 @@ fn enforce_result_budget(
     // Offered only for calls the advice already classifies as safely repeatable:
     // pointing an effect-already-applied operation at a retry path would direct
     // the caller to duplicate a non-replayed mutation or access event.
-    if files.is_some() && advice != OversizedResultAdvice::EffectAlreadyApplied {
+    if files.is_some()
+        && advice != OversizedResultAdvice::EffectAlreadyApplied
+        && !is_local_discovery(tool)
+    {
         message.push_str(
             " Alternatively, retry through the operation's executor with resultDelivery \
              \"file\" to receive the full result as an out-of-context reference.",
@@ -11957,12 +11993,23 @@ fn enforce_result_budget(
     if let Some(mut payload) = take_payload_wiping_text(&mut result) {
         crate::files::zeroize_tree(&mut payload);
     }
+    let (effect, recovery) = if is_local_discovery(tool) {
+        (
+            crate::execution_error::Effect::NotStarted,
+            crate::execution_error::Recovery::CorrectRequest,
+        )
+    } else {
+        (
+            crate::execution_error::Effect::Unknown,
+            crate::execution_error::Recovery::Reconcile,
+        )
+    };
     crate::execution_error::name_error(
         tool,
         crate::execution_error::ExecutionError::new(
             crate::execution_error::Category::Capacity,
-            crate::execution_error::Effect::Unknown,
-            crate::execution_error::Recovery::Reconcile,
+            effect,
+            recovery,
             message,
         )
         .into_result(),
@@ -12037,6 +12084,12 @@ impl OversizedResultAdvice {
 /// published schema, so neither can drift from what the tools actually offer.
 /// Only the selected operation's input schema is needed.
 fn oversized_result_advice(tool: &str) -> OversizedResultAdvice {
+    if tool == OPERATIONS_LIST_TOOL {
+        return OversizedResultAdvice::RequestFewerRecords;
+    }
+    if is_local_discovery(tool) {
+        return OversizedResultAdvice::NoNarrowingParameter;
+    }
     // An unpublished name cannot be shown to be safe to repeat.
     let Some(operation) = operation_definition(tool) else {
         return OversizedResultAdvice::EffectAlreadyApplied;
@@ -12081,9 +12134,9 @@ fn dispatch_operations_list_for_profile(
             None,
         ));
     }
-    if !(1..=50).contains(&input.limit) || input.offset > 10_000 {
+    if input.limit == 0 || input.offset > 10_000 {
         return Err(McpError::invalid_params(
-            "limit must be between 1 and 50; offset must not exceed 10000",
+            "limit must be positive; offset must not exceed 10000",
             None,
         ));
     }
@@ -12133,6 +12186,9 @@ fn dispatch_operations_list_for_profile(
             } else {
                 crate::discovery::brief(operation.description)
             },
+            input_schema: input
+                .include_input_schema
+                .then(|| Value::Object(operation.input_schema().as_ref().clone())),
         })
         .collect();
 
@@ -12167,14 +12223,14 @@ fn dispatch_operations_describe_for_profile(
     )?;
     if !(3..=128).contains(&input.operation.chars().count()) {
         return Err(McpError::invalid_params(
-            "operation must contain between 3 and 128 characters",
+            "operation_id must contain between 3 and 128 characters",
             None,
         ));
     }
     let Some(operation) =
         operation_definition(&input.operation).filter(|operation| profile.allows(operation.policy))
     else {
-        return Err(unknown_operation());
+        return Err(unknown_operation_name(&input.operation));
     };
 
     structured(OperationsDescribeOutput {
@@ -17142,14 +17198,14 @@ mod schema_portability_tests {
         assert!(validates(
             &write,
             &serde_json::json!({
-                "operation": operation,
+                "operation_id": operation,
                 "arguments": {"secretValueFile": "mcp-file://gateway/example"}
             })
         ));
         assert!(validates(
             &write,
             &serde_json::json!({
-                "operation": operation,
+                "operation_id": operation,
                 "arguments": {
                     "secretValueFile": {"uri": "mcp-file://gateway/example"}
                 }
@@ -17158,7 +17214,7 @@ mod schema_portability_tests {
         assert!(!validates(
             &write,
             &serde_json::json!({
-                "operation": operation,
+                "operation_id": operation,
                 "arguments": {"secretValueFile": 42}
             })
         ));
@@ -27393,7 +27449,7 @@ mod tests {
                 continue;
             };
 
-            let operation = example["operation"]
+            let operation = example["operation_id"]
                 .as_str()
                 .expect("an example names an operation");
             assert_eq!(
@@ -27660,6 +27716,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn oversized_local_discovery_can_be_narrowed_without_upstream_effects() {
+        let server = MockServer::start().await;
+        let client = unused_client(&server);
+        let plane = test_plane();
+        let result = dispatch(
+            &client,
+            Some(&plane),
+            request(
+                super::OPERATIONS_LIST_TOOL,
+                &json!({"limit":usize::MAX,"includeInputSchema":true}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = &result.structured_content.as_ref().unwrap()["error"];
+        assert_eq!(error["category"], "capacity");
+        assert_eq!(error["effect"], "notStarted");
+        assert_eq!(error["recovery"], "correctRequest");
+        let guidance = error["correction"].as_str().unwrap();
+        assert!(guidance.contains("smaller limit"));
+        assert!(!guidance.contains("completed upstream"));
+        assert!(!guidance.contains("resultDelivery"));
+        let narrowed = dispatch(
+            &client,
+            Some(&plane),
+            request(
+                super::OPERATIONS_LIST_TOOL,
+                &json!({"limit":1,"includeInputSchema":true}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_ne!(narrowed.is_error, Some(true));
+        assert_eq!(
+            narrowed.structured_content.as_ref().unwrap()["nextOffset"],
+            1
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

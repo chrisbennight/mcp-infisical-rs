@@ -56,7 +56,7 @@ Have the client initialize using MCP `2025-11-25`, list tools, then call
 
 ```json
 {
-  "operation": "projects.list",
+  "operation_id": "projects.list",
   "arguments": { "offset": 0, "limit": 10 }
 }
 ```

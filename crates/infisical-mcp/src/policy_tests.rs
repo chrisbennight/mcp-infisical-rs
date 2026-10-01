@@ -108,7 +108,7 @@ fn metadata_gateway_accepts(
     if envelope.len() != 2 {
         return false;
     }
-    let Some(operation) = envelope.get("operation").and_then(Value::as_str) else {
+    let Some(operation) = envelope.get("operation_id").and_then(Value::as_str) else {
         return false;
     };
     let Some(arguments) = envelope.get("arguments") else {
@@ -154,7 +154,7 @@ async fn metadata_gateway_denies_reveal_and_wrong_scope_without_forwarding() {
     ))
     .unwrap();
     let manifest = operation_policy_payload();
-    let valid = json!({"operation":"secrets.metadata.list", "arguments":{
+    let valid = json!({"operation_id":"secrets.metadata.list", "arguments":{
         "projectId":"project-1", "environment":"prod", "path":"/"
     }});
     assert!(metadata_gateway_accepts(
@@ -176,7 +176,7 @@ async fn metadata_gateway_denies_reveal_and_wrong_scope_without_forwarding() {
         "infisical.destroy",
         "secrets.reveal",
     ] {
-        let envelope = json!({"operation":"secrets.reveal","arguments":{
+        let envelope = json!({"operation_id":"secrets.reveal","arguments":{
             "projectId":"project-1", "environment":"prod", "secretPath":"/", "secretName":"policy-canary", "confirm":true
         }});
         assert!(!metadata_gateway_accepts(
@@ -198,8 +198,8 @@ async fn metadata_gateway_denies_reveal_and_wrong_scope_without_forwarding() {
     }
     for envelope in [
         json!({}),
-        json!({"operation":"secrets.reveal","arguments":[],"risk":"low"}),
-        json!({"operation":"unknown","arguments":{}}),
+        json!({"operation_id":"secrets.reveal","arguments":[],"risk":"low"}),
+        json!({"operation_id":"unknown","arguments":{}}),
     ] {
         assert!(!metadata_gateway_accepts(
             &manifest,
