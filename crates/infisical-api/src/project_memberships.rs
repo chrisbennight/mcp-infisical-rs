@@ -507,7 +507,7 @@ struct ListIdentityMembershipsQuery {
     #[serde(skip_serializing)]
     project_id: ProjectId,
     offset: u32,
-    limit: u16,
+    limit: usize,
 }
 
 #[derive(Deserialize)]
@@ -926,6 +926,7 @@ impl InfisicalClient {
         project_id: &ProjectId,
         page: PageRequest,
     ) -> Result<Page<ProjectIdentityMembership>, ResourceError> {
+        let page = page.clamped_to(1000);
         let response = self
             .execute_read::<ListIdentityMemberships>(&ListIdentityMembershipsQuery {
                 project_id: project_id.clone(),
@@ -1206,6 +1207,32 @@ mod tests {
             .unwrap_err(),
             ProjectMembershipInputError::DuplicatePrincipal
         );
+    }
+
+    #[tokio::test]
+    async fn identity_membership_counts_use_the_endpoint_maximum() {
+        let server = MockServer::start().await;
+        mount_login(&server, "membership-read-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/projects/project-1/memberships/identities"))
+            .and(query_param("limit", "1000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "identityMemberships": [], "totalCount": 0
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = InfisicalClient::new(settings(&server))
+            .unwrap()
+            .list_project_identity_memberships(
+                &ProjectId::new("project-1").unwrap(),
+                PageRequest::new(0, 2000).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.requested_limit, 2000);
+        assert_eq!(page.effective_limit, 1000);
+        assert_eq!(page.returned, 0);
     }
 
     #[tokio::test]

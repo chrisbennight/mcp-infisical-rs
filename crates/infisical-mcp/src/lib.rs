@@ -1885,7 +1885,7 @@ mod tests {
             (
                 "projects.list",
                 &["includeDetails", "limit", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("projects.get", &["projectId"][..], &["project"][..]),
         ];
@@ -1985,7 +1985,7 @@ mod tests {
                     "projectId",
                     "recursive",
                 ][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("folders.get", &["folderId"][..], folder_fields),
             (
@@ -2011,7 +2011,7 @@ mod tests {
             (
                 "tags.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("tags.get", &["projectId", "selector"][..], tag_fields),
             (
@@ -2040,7 +2040,7 @@ mod tests {
                     "recursive",
                     "tagSlugs",
                 ][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "secrets.reveal",
@@ -2094,7 +2094,7 @@ mod tests {
             (
                 "identities.list",
                 &["limit", "offset", "organizationId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("identities.get", &["identityId"][..], identity_fields),
             (
@@ -2133,7 +2133,7 @@ mod tests {
             (
                 "projectUserMemberships.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "projectUserMemberships.get",
@@ -2163,7 +2163,7 @@ mod tests {
             (
                 "projectIdentityMemberships.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "projectIdentityMemberships.get",
@@ -2203,7 +2203,7 @@ mod tests {
             (
                 "projectRoles.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "projectRoles.get",
@@ -2213,7 +2213,7 @@ mod tests {
             (
                 "organizationRoles.list",
                 &["limit", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("organizationRoles.get", &["roleSlug"][..], role_fields),
         ];
@@ -2242,26 +2242,22 @@ mod tests {
             "updatedAt",
         ][..];
         let expected: [ToolSchemaFields<'_>; 6] = [
-            (
-                "groups.list",
-                &["limit", "offset"][..],
-                &["items", "next", "total"][..],
-            ),
+            ("groups.list", &["limit", "offset"][..], PAGE_OUTPUT_FIELDS),
             ("groups.get", &["groupId"][..], group_fields),
             (
                 "groups.members.list",
                 &["groupId", "limit", "memberType", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "groups.projects.list",
                 &["assignment", "groupId", "limit", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "projectGroupMemberships.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "projectGroupMemberships.get",
@@ -2291,7 +2287,7 @@ mod tests {
             (
                 "identityProjectAdditionalPrivileges.list",
                 &["identityId", "limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "identityProjectAdditionalPrivileges.get",
@@ -2399,7 +2395,7 @@ mod tests {
             (
                 "identityUniversalAuth.clientSecrets.list",
                 &["identityId", "limit", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "identityUniversalAuth.clientSecrets.get",
@@ -2485,7 +2481,7 @@ mod tests {
             (
                 "identityTokenAuth.tokens.list",
                 &["identityId", "limit", "offset"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "identityTokenAuth.tokens.get",
@@ -2580,7 +2576,7 @@ mod tests {
             (
                 "secretImports.list",
                 &["limit", "offset", "target"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "secretImports.get",
@@ -2674,7 +2670,7 @@ mod tests {
                 "timeRange",
                 "userAgentType",
             ][..],
-            &["items", "next", "total"][..],
+            PAGE_OUTPUT_FIELDS,
         )];
         assert_schema_field_table(tools, &expected);
     }
@@ -2689,7 +2685,7 @@ mod tests {
             (
                 "appConnections.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "appConnections.github.get",
@@ -2732,7 +2728,7 @@ mod tests {
             (
                 "secretSyncs.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "secretSyncs.github.get",
@@ -2794,7 +2790,7 @@ mod tests {
             (
                 "secretRotations.list",
                 &["limit", "offset", "projectId"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
         ];
         assert_schema_field_table(tools, &sync_and_rotation);
@@ -2922,7 +2918,7 @@ mod tests {
             (
                 "kms.keys.list",
                 &["descending", "limit", "offset", "projectId", "search"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             ("kms.keys.get", &["keyId", "projectId"][..], key_fields),
             (
@@ -3024,7 +3020,7 @@ mod tests {
             (
                 CERTIFICATE_POLICIES_LIST_TOOL,
                 &["limit", "offset", "projectId", "search"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CERTIFICATE_POLICIES_GET_TOOL,
@@ -3120,7 +3116,7 @@ mod tests {
                     "sortOrder",
                     "status",
                 ][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CERTIFICATES_GET_TOOL,
@@ -3295,7 +3291,7 @@ mod tests {
                     "status",
                     "toDate",
                 ][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CERTIFICATE_REQUESTS_GET_TOOL,
@@ -3356,7 +3352,7 @@ mod tests {
                     "projectId",
                     "search",
                 ][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CERTIFICATE_PROFILES_GET_TOOL,
@@ -3407,7 +3403,7 @@ mod tests {
             (
                 CERTIFICATE_PROFILE_CERTIFICATES_LIST_TOOL,
                 &["limit", "offset", "search", "status", "target"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CERTIFICATE_PROFILE_LATEST_BUNDLE_REVEAL_TOOL,
@@ -3605,7 +3601,7 @@ mod tests {
             (
                 CODE_SIGNERS_LIST_TOOL,
                 &["limit", "offset", "projectId", "search"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CODE_SIGNERS_GET_TOOL,
@@ -3722,7 +3718,7 @@ mod tests {
             (
                 CODE_SIGNER_APPROVAL_REQUESTS_LIST_TOOL,
                 &["limit", "offset", "statuses", "target"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 CODE_SIGNER_APPROVAL_REQUESTS_CREATE_TOOL,
@@ -3758,7 +3754,7 @@ mod tests {
             (
                 CODE_SIGNER_OPERATIONS_LIST_TOOL,
                 &["limit", "offset", "status", "target"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
         ];
         assert_schema_field_table(tools, &expected);
@@ -3945,7 +3941,7 @@ mod tests {
             (
                 "dynamicSecrets.list",
                 &["limit", "offset", "scope"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "dynamicSecrets.get",
@@ -3976,7 +3972,7 @@ mod tests {
             (
                 "dynamicSecretLeases.list",
                 &["dynamicSecretName", "limit", "offset", "scope"][..],
-                &["items", "next", "total"][..],
+                PAGE_OUTPUT_FIELDS,
             ),
             (
                 "dynamicSecretLeases.get",
@@ -4121,6 +4117,15 @@ mod tests {
         ];
         assert_schema_field_table(tools, &expected);
     }
+
+    const PAGE_OUTPUT_FIELDS: &[&str] = &[
+        "effectiveLimit",
+        "items",
+        "next",
+        "requestedLimit",
+        "returned",
+        "total",
+    ];
 
     fn assert_schema_field_table(tools: &[Tool], expected: &[(&str, &[&str], &[&str])]) {
         for (tool, &(name, input_fields, output_fields)) in tools.iter().zip(expected) {
@@ -6561,7 +6566,10 @@ mod tests {
                 "{name} offset maximum"
             );
             assert_eq!(properties["limit"]["minimum"], 1, "{name} limit minimum");
-            assert_eq!(properties["limit"]["maximum"], 100, "{name} limit maximum");
+            assert!(
+                properties["limit"].get("maximum").is_none(),
+                "{name} limit maximum"
+            );
             assert_eq!(properties["limit"]["default"], 50, "{name} limit default");
         }
         let token_list = tools
@@ -6572,7 +6580,7 @@ mod tests {
         assert_eq!(properties["offset"]["minimum"], 0);
         assert_eq!(properties["offset"]["maximum"], 100);
         assert_eq!(properties["limit"]["minimum"], 1);
-        assert_eq!(properties["limit"]["maximum"], 100);
+        assert!(properties["limit"].get("maximum").is_none());
         assert_eq!(properties["limit"]["default"], 50);
     }
 
@@ -7737,11 +7745,11 @@ mod tests {
         assert_ssh_host_type_descriptions(&mcp.client).await;
 
         let invalid_page = CallToolRequestParams::new("projects.list")
-            .with_arguments(json!({ "limit": 101 }).as_object().unwrap().clone());
+            .with_arguments(json!({ "limit": 0 }).as_object().unwrap().clone());
         let error = tools::dispatch_tool(&mcp.client, None, invalid_page)
             .await
             .unwrap_err();
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert_eq!(error.message, "page limit must be between 1 and 100");
+        assert_eq!(error.message, "page limit must be positive");
     }
 }

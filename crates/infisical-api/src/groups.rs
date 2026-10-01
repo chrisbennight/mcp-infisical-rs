@@ -250,7 +250,7 @@ struct GroupMembersQuery {
     #[serde(skip_serializing)]
     group_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     member_type_filter: Option<&'static str>,
 }
@@ -288,7 +288,7 @@ struct GroupProjectsQuery {
     #[serde(skip_serializing)]
     group_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     filter: Option<&'static str>,
     order_by: &'static str,
@@ -444,6 +444,7 @@ impl InfisicalClient {
         member_type: GroupMemberTypeFilter,
         page: PageRequest,
     ) -> Result<Page<GroupMember>, ResourceError> {
+        let page = page.clamped_to(100);
         let response = self
             .execute_read::<ListGroupMembers>(&GroupMembersQuery {
                 group_id: group_id.as_str().to_owned(),
@@ -483,6 +484,7 @@ impl InfisicalClient {
         filter: GroupProjectFilter,
         page: PageRequest,
     ) -> Result<Page<GroupProject>, ResourceError> {
+        let page = page.clamped_to(100);
         let response = self
             .execute_read::<ListGroupProjects>(&GroupProjectsQuery {
                 group_id: group_id.as_str().to_owned(),
@@ -562,6 +564,33 @@ mod tests {
         GroupId, InfisicalClient, PageRequest, ProjectId, ResourceError,
         test_support::{mount_login, settings},
     };
+
+    #[tokio::test]
+    async fn group_member_counts_use_the_endpoint_maximum() {
+        let server = MockServer::start().await;
+        mount_login(&server, "group-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/groups/group-1/members"))
+            .and(query_param("limit", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "members": [], "totalCount": 0
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = InfisicalClient::new(settings(&server))
+            .unwrap()
+            .list_group_members(
+                &GroupId::new("group-1").unwrap(),
+                GroupMemberTypeFilter::All,
+                PageRequest::new(0, 1000).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.requested_limit, 1000);
+        assert_eq!(page.effective_limit, 100);
+        assert_eq!(page.returned, 0);
+    }
 
     #[tokio::test]
     async fn group_discovery_uses_exact_identity_compatible_routes_and_bounded_pages() {

@@ -49,8 +49,8 @@ pub(super) struct KmsKeysListInput {
     offset: u32,
     /// Maximum key records returned in this response.
     #[serde(default = "default_page_limit")]
-    #[schemars(range(min = 1, max = 100))]
-    limit: u16,
+    #[schemars(range(min = 1))]
+    limit: usize,
     /// Sort key names in descending rather than ascending order.
     #[serde(default)]
     descending: bool,

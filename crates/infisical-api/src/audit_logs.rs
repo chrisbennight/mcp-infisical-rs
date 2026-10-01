@@ -355,7 +355,7 @@ struct ListAuditLogsQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     end_date: Option<String>,
     offset: u32,
-    limit: u16,
+    limit: usize,
 }
 
 impl From<&AuditLogListRequest> for ListAuditLogsQuery {
@@ -600,6 +600,9 @@ impl InfisicalClient {
         &self,
         request: &AuditLogListRequest,
     ) -> Result<Page<AuditLog>, ResourceError> {
+        let mut request = request.clone();
+        request.page = request.page.clamped_to(1000);
+        let request = &request;
         request.validate()?;
         let response = self
             .execute_observable_read::<ListAuditLogs>(&ListAuditLogsQuery::from(request))
@@ -717,6 +720,29 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn audit_log_counts_use_the_endpoint_maximum_and_report_clamping() {
+        let server = MockServer::start().await;
+        mount_login(&server, "audit-token").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/organization/audit-logs"))
+            .and(query_param("limit", "1000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"auditLogs":[]})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let request = AuditLogListRequest::new(PageRequest::new(0, usize::MAX).unwrap());
+        let page = InfisicalClient::new(settings(&server))
+            .unwrap()
+            .list_audit_logs(&request)
+            .await
+            .unwrap();
+        assert_eq!(page.requested_limit, usize::MAX);
+        assert_eq!(page.effective_limit, 1000);
+        assert_eq!(page.returned, 0);
+        assert!(page.next.is_none());
     }
 
     #[tokio::test]

@@ -763,7 +763,7 @@ fn policy_validity_millis(value: &str) -> Option<u64> {
 struct ListPoliciesQuery {
     project_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
 }
@@ -1166,7 +1166,7 @@ fn validate_policy_page_bounds(
     returned: usize,
     total_count: u64,
 ) -> Result<(), ResourceError> {
-    if returned > usize::from(page.limit()) {
+    if returned > page.limit() {
         return Err(ResourceError::InvalidCertificatePolicyResponse);
     }
     let returned =
@@ -1177,7 +1177,7 @@ fn validate_policy_page_bounds(
         .ok_or(ResourceError::InvalidCertificatePolicyResponse)?;
     let page_fits_total = if returned == 0 {
         offset >= total_count
-    } else if returned < u64::from(page.limit()) {
+    } else if returned < u64::try_from(page.limit()).unwrap_or(u64::MAX) {
         end == total_count
     } else {
         end <= total_count
@@ -1196,8 +1196,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, filter, response-contract, or pagination error.
     pub async fn list_certificate_policies(
         &self,
-        request: CertificatePolicyListRequest,
+        mut request: CertificatePolicyListRequest,
     ) -> Result<Page<CertificatePolicy>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read::<ListPolicies>(&ListPoliciesQuery {
                 project_id: request.project_id.as_str().to_owned(),

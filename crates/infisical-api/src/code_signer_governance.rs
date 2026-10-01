@@ -984,7 +984,7 @@ struct ListApprovalRequestsQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     statuses: Option<String>,
     offset: u32,
-    limit: u16,
+    limit: usize,
 }
 
 #[derive(Serialize)]
@@ -1126,7 +1126,7 @@ struct ListSigningOperationsQuery {
     #[serde(skip)]
     signer_id: CodeSignerId,
     offset: u32,
-    limit: u16,
+    limit: usize,
     status: Option<CodeSignerOperationStatus>,
 }
 
@@ -2037,9 +2037,10 @@ fn approval_requests_page_from_wire(
         .offset()
         .checked_add(returned)
         .ok_or(ResourceError::InvalidCodeSignerGovernanceResponse)?;
-    if response.requests.len() > usize::from(request.page.limit())
+    if response.requests.len() > request.page.limit()
         || response.total_count < u64::from(end)
-        || (returned < u32::from(request.page.limit()) && u64::from(end) < response.total_count)
+        || (returned < u32::try_from(request.page.limit()).unwrap_or(u32::MAX)
+            && u64::from(end) < response.total_count)
     {
         return Err(ResourceError::InvalidCodeSignerGovernanceResponse);
     }
@@ -2125,9 +2126,10 @@ fn signing_operations_page_from_wire(
         .offset()
         .checked_add(returned)
         .ok_or(ResourceError::InvalidCodeSignerGovernanceResponse)?;
-    if response.operations.len() > usize::from(request.page.limit())
+    if response.operations.len() > request.page.limit()
         || response.total_count < u64::from(end)
-        || (returned < u32::from(request.page.limit()) && u64::from(end) < response.total_count)
+        || (returned < u32::try_from(request.page.limit()).unwrap_or(u32::MAX)
+            && u64::from(end) < response.total_count)
     {
         return Err(ResourceError::InvalidCodeSignerGovernanceResponse);
     }
@@ -2324,8 +2326,9 @@ impl InfisicalClient {
     /// Returns a scope, pagination, client, or bounded response-contract error.
     pub async fn list_code_signer_approval_requests(
         &self,
-        request: CodeSignerApprovalRequestListRequest,
+        mut request: CodeSignerApprovalRequestListRequest,
     ) -> Result<Page<CodeSignerApprovalRequest>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         self.get_code_signer(&request.project_id, &request.signer_id)
             .await?;
         let statuses = (!request.statuses.is_empty()).then(|| {
@@ -2519,8 +2522,9 @@ impl InfisicalClient {
     /// Returns a scope, pagination, client, or bounded response-contract error.
     pub async fn list_code_signer_signing_operations(
         &self,
-        request: CodeSignerSigningOperationListRequest,
+        mut request: CodeSignerSigningOperationListRequest,
     ) -> Result<Page<CodeSignerSigningOperation>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         self.get_code_signer(&request.project_id, &request.signer_id)
             .await?;
         let response = self

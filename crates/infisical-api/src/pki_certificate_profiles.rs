@@ -1166,7 +1166,7 @@ fn validate_scep_change_against_current(
 struct ListProfilesQuery {
     project_id: String,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     search: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1205,7 +1205,7 @@ struct ProfileCertificatesQuery {
     #[serde(skip_serializing)]
     profile_id: CertificateProfileId,
     offset: u32,
-    limit: u16,
+    limit: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<CertificateProfileCertificateStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2639,7 +2639,7 @@ fn validate_profile_page_bounds(
     returned: usize,
     total_count: u64,
 ) -> Result<(), ResourceError> {
-    if returned > usize::from(page.limit()) {
+    if returned > page.limit() {
         return Err(ResourceError::InvalidCertificateProfileResponse);
     }
     let returned =
@@ -2650,7 +2650,7 @@ fn validate_profile_page_bounds(
         .ok_or(ResourceError::InvalidCertificateProfileResponse)?;
     let page_fits_total = if returned == 0 {
         offset >= total_count
-    } else if returned < u64::from(page.limit()) {
+    } else if returned < u64::try_from(page.limit()).unwrap_or(u64::MAX) {
         end == total_count
     } else {
         end <= total_count
@@ -2662,7 +2662,7 @@ fn validate_profile_page_bounds(
 }
 
 fn validate_page_limit(page: PageRequest, returned: usize) -> Result<(), ResourceError> {
-    if returned > usize::from(page.limit()) {
+    if returned > page.limit() {
         return Err(ResourceError::InvalidCertificateProfileResponse);
     }
     Ok(())
@@ -2915,8 +2915,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, response-contract, or pagination error.
     pub async fn list_certificate_profiles(
         &self,
-        request: CertificateProfileListRequest,
+        mut request: CertificateProfileListRequest,
     ) -> Result<Page<CertificateProfile>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         let response = self
             .execute_observable_read::<ListProfiles>(&ListProfilesQuery {
                 project_id: request.project_id.as_str().to_owned(),
@@ -3220,8 +3221,9 @@ impl InfisicalClient {
     /// Returns a typed client, scope, response-contract, or pagination error.
     pub async fn list_certificate_profile_certificates(
         &self,
-        request: CertificateProfileCertificateListRequest,
+        mut request: CertificateProfileCertificateListRequest,
     ) -> Result<Page<CertificateProfileCertificate>, ResourceError> {
+        request.page = request.page.clamped_to(100);
         self.get_certificate_profile(&request.project_id, &request.profile_id)
             .await?;
         let expected_status = request.status;

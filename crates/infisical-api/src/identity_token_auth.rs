@@ -340,7 +340,7 @@ struct ListTokensQuery {
     #[serde(skip_serializing)]
     identity_id: IdentityId,
     offset: u32,
-    limit: u16,
+    limit: usize,
 }
 
 #[derive(Deserialize)]
@@ -636,6 +636,7 @@ impl InfisicalClient {
         identity_id: &IdentityId,
         page: PageRequest,
     ) -> Result<Page<TokenAuthToken>, ResourceError> {
+        let page = page.clamped_to(100);
         if page.offset() > MAX_TOKEN_AUTH_LIST_OFFSET {
             return Err(ResourceError::TokenAuthPageOffsetLimit);
         }
