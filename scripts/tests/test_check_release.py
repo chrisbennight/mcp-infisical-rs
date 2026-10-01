@@ -12,6 +12,19 @@ SPEC.loader.exec_module(CHECK_RELEASE)
 
 
 class TestReleaseContract(unittest.TestCase):
+    def test_runtime_keeps_required_libraries_and_excludes_openssl(self) -> None:
+        dockerfile = CHECK_RELEASE.DOCKERFILE.read_text(encoding="utf-8")
+        self.assertEqual(CHECK_RELEASE.validate_dockerfile(dockerfile), [])
+        for before, after, expected in (
+            ("base-nossl-debian12", "cc-debian12", "no-OpenSSL non-root runtime"),
+            ("COPY --from=runtime-libraries /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1", "", "GCC support library"),
+            ("COPY --from=runtime-libraries /usr/share/doc/gcc-12-base/ /usr/share/doc/gcc-12-base/", "", "GCC copyright notices"),
+        ):
+            with self.subTest(change=before):
+                self.assertIn(before, dockerfile)
+                errors = CHECK_RELEASE.validate_dockerfile(dockerfile.replace(before, after))
+                self.assertTrue(any(expected in error for error in errors), errors)
+
     def test_release_artifact_qualification_and_compiler_assertion_are_required(self) -> None:
         dockerfile = CHECK_RELEASE.DOCKERFILE.read_text(encoding="utf-8")
         broken = dockerfile.replace('test "$(rustc --version | cut -d \' \' -f 2)" = "$expected"', 'true')

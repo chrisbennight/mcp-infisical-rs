@@ -11660,6 +11660,7 @@ pub(crate) async fn dispatch_with_profile(
                 .or_else(|| arguments.get("tool"))
         })
         .and_then(Value::as_str)
+        .filter(|_| !is_local_discovery(tool.as_ref()))
         .and_then(operation_definition);
     if operation.is_some_and(|operation| !profile.allows(operation.policy)) {
         return Err(unknown_operation());
@@ -11972,7 +11973,10 @@ fn enforce_result_budget(
     // Offered only for calls the advice already classifies as safely repeatable:
     // pointing an effect-already-applied operation at a retry path would direct
     // the caller to duplicate a non-replayed mutation or access event.
-    if files.is_some() && advice != OversizedResultAdvice::EffectAlreadyApplied {
+    if files.is_some()
+        && advice != OversizedResultAdvice::EffectAlreadyApplied
+        && !is_local_discovery(tool)
+    {
         message.push_str(
             " Alternatively, retry through the operation's executor with resultDelivery \
              \"file\" to receive the full result as an out-of-context reference.",
@@ -11989,12 +11993,23 @@ fn enforce_result_budget(
     if let Some(mut payload) = take_payload_wiping_text(&mut result) {
         crate::files::zeroize_tree(&mut payload);
     }
+    let (effect, recovery) = if is_local_discovery(tool) {
+        (
+            crate::execution_error::Effect::NotStarted,
+            crate::execution_error::Recovery::CorrectRequest,
+        )
+    } else {
+        (
+            crate::execution_error::Effect::Unknown,
+            crate::execution_error::Recovery::Reconcile,
+        )
+    };
     crate::execution_error::name_error(
         tool,
         crate::execution_error::ExecutionError::new(
             crate::execution_error::Category::Capacity,
-            crate::execution_error::Effect::Unknown,
-            crate::execution_error::Recovery::Reconcile,
+            effect,
+            recovery,
             message,
         )
         .into_result(),
@@ -12069,6 +12084,12 @@ impl OversizedResultAdvice {
 /// published schema, so neither can drift from what the tools actually offer.
 /// Only the selected operation's input schema is needed.
 fn oversized_result_advice(tool: &str) -> OversizedResultAdvice {
+    if tool == OPERATIONS_LIST_TOOL {
+        return OversizedResultAdvice::RequestFewerRecords;
+    }
+    if is_local_discovery(tool) {
+        return OversizedResultAdvice::NoNarrowingParameter;
+    }
     // An unpublished name cannot be shown to be safe to repeat.
     let Some(operation) = operation_definition(tool) else {
         return OversizedResultAdvice::EffectAlreadyApplied;
@@ -27695,6 +27716,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn oversized_local_discovery_can_be_narrowed_without_upstream_effects() {
+        let server = MockServer::start().await;
+        let client = unused_client(&server);
+        let plane = test_plane();
+        let result = dispatch(
+            &client,
+            Some(&plane),
+            request(
+                super::OPERATIONS_LIST_TOOL,
+                &json!({"limit":usize::MAX,"includeInputSchema":true}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let error = &result.structured_content.as_ref().unwrap()["error"];
+        assert_eq!(error["category"], "capacity");
+        assert_eq!(error["effect"], "notStarted");
+        assert_eq!(error["recovery"], "correctRequest");
+        let guidance = error["correction"].as_str().unwrap();
+        assert!(guidance.contains("smaller limit"));
+        assert!(!guidance.contains("completed upstream"));
+        assert!(!guidance.contains("resultDelivery"));
+        let narrowed = dispatch(
+            &client,
+            Some(&plane),
+            request(
+                super::OPERATIONS_LIST_TOOL,
+                &json!({"limit":1,"includeInputSchema":true}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_ne!(narrowed.is_error, Some(true));
+        assert_eq!(
+            narrowed.structured_content.as_ref().unwrap()["nextOffset"],
+            1
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

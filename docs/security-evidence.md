@@ -32,6 +32,14 @@ vulnerabilities.
 
 ## Artifact identity and retention
 
+The final image uses a digest-pinned `base-nossl-debian12` runtime with CA
+certificates and a non-root user. It copies the required GCC support library,
+package records, and copyright notices from a separately pinned official
+Distroless image. The application uses Rustls; unused OpenSSL libraries are
+excluded after the image gate identified CVE-2026-84782 in the previous base.
+Native health checks, hardened image smoke tests, complete runtime inventory,
+and fresh vulnerability evidence remain publication requirements.
+
 The pull-request scan must match the smoke image's immutable local image ID.
 Release publication first builds a uniquely tagged candidate with build
 provenance, then scans its registry digest. Version and commit tags are assigned
