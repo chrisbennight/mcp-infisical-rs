@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -18,6 +19,7 @@ class MarkdownFileDiscoveryTests(unittest.TestCase):
             kept = root / "docs" / "kept.md"
             ignored = [
                 root / ".git" / "review.md",
+                root / ".worktrees" / "other" / "README.md",
                 root / "target" / "doc" / "generated.md",
             ]
 
@@ -26,6 +28,10 @@ class MarkdownFileDiscoveryTests(unittest.TestCase):
                 path.write_text("# Document\n", encoding="utf-8")
 
             self.assertEqual(check_docs.markdown_files(root), [kept])
+
+    def test_documentation_validation_does_not_compile_the_server(self) -> None:
+        with patch("subprocess.run", side_effect=AssertionError("documentation must not run Cargo")):
+            self.assertEqual(check_docs.main(), 0)
 
 
 if __name__ == "__main__":

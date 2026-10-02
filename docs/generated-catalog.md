@@ -1,8 +1,8 @@
 # Generated catalog summary
 
 Generated from the executable `operation_policy` and `server_capabilities` exports.
-Run `python3 scripts/catalog_summary.py --write` to regenerate; ordinary
-documentation validation checks this file for drift.
+Run `python3 scripts/catalog_summary.py --write` to regenerate;
+catalog validation checks this file for drift.
 
 Schema revision: `2026-10-01.2`. Pinned upstream: `0.160.12`.
 

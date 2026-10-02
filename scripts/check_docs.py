@@ -5,9 +5,6 @@ from __future__ import annotations
 
 import re
 import sys
-import subprocess
-
-import catalog_summary
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -16,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"!?\[[^\]]*\]\((?P<target>[^)]+)\)")
 LINE_ANCHOR = re.compile(r":\d+(?:#.*)?$")
 REMOTE_SCHEMES = ("http://", "https://", "mailto:")
-IGNORED_DIRECTORIES = frozenset({".git", "target", "node_modules", "dist"})
+IGNORED_DIRECTORIES = frozenset({".git", ".worktrees", "target", "node_modules", "dist"})
 
 
 def markdown_files(root: Path = ROOT) -> list[Path]:
@@ -60,10 +57,6 @@ def validate(path: Path) -> list[str]:
 def main() -> int:
     files = markdown_files()
     errors = [error for path in files for error in validate(path)]
-    try:
-        errors.extend(catalog_summary.check())
-    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
-        errors.append(f"catalog export validation failed ({type(error).__name__})")
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

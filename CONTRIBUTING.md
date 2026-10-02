@@ -17,8 +17,8 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo doc --workspace --no-deps --locked
 python3 scripts/check_docs.py
+python3 scripts/catalog_summary.py
 python3 scripts/check_api_coverage.py
-python3 scripts/check_release.py
 python3 -m unittest discover -s scripts/tests
 ```
 
@@ -26,6 +26,10 @@ Tests use isolated HTTP fakes and synthetic credentials. They must not contact
 your Infisical instance or gateway. Docker is needed for the additional image
 build and hardened-container smoke test in GitHub CI, not for the Rust tests.
 Cargo uses crates.io by default; no private registry or gateway is required.
+
+For GitHub workflow changes, run actionlint 1.7.12; CI downloads the official
+release and verifies its checksum. The image and release jobs inspect and
+qualify the actual executable and image before release-tag promotion.
 
 `infisical-api` owns REST requests and redaction; `infisical-mcp` owns schemas,
 operation dispatch, and classifications; `infisical-server` owns transports,
