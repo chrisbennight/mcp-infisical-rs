@@ -1400,7 +1400,7 @@ mod tests {
         assert_eq!(error["category"], "validation");
         assert_eq!(error["effect"], "notStarted");
         assert_eq!(error["recovery"], "correctRequest");
-        assert_eq!(error["fieldPath"], "arguments");
+        assert_eq!(error["fieldPath"], "/arguments/limit");
         let compatibility: Value =
             serde_json::from_str(invalid["result"]["content"][0]["text"].as_str().unwrap())
                 .unwrap();
@@ -1411,7 +1411,7 @@ mod tests {
                 .contains("invalid-sensitive-value-canary")
         );
         let unknown = call_authenticated_tool(
-            router,
+            router.clone(),
             &identity,
             3,
             "infisical.read",
@@ -1420,6 +1420,38 @@ mod tests {
         .await;
         assert_eq!(unknown["error"]["code"], -32602);
         assert!(!unknown.to_string().contains("unknown-operation-canary"));
+        let missing = call_authenticated_tool(
+            router.clone(),
+            &identity,
+            4,
+            "infisical.read",
+            json!({"operation_id":"projects.get", "arguments":{}}),
+        )
+        .await;
+        let error = &missing["result"]["structuredContent"]["error"];
+        assert_eq!(error["fieldPath"], "/arguments/projectId");
+        assert_eq!(
+            error["correction"],
+            "Missing required property \"projectId\"."
+        );
+        assert_eq!(error["effect"], "notStarted");
+        let nested = call_authenticated_tool(
+            router,
+            &identity,
+            5,
+            "infisical.write",
+            json!({"operation_id":"secrets.create", "arguments":{
+                "target":{"projectId":3,"environment":"fixture","path":"/","name":"fixture"},
+                "secretValue":"sensitive-nested-value-canary"
+            }}),
+        )
+        .await;
+        assert_eq!(nested["result"]["isError"], true);
+        assert_eq!(
+            nested["result"]["structuredContent"]["error"]["fieldPath"],
+            "/arguments/target/projectId"
+        );
+        assert!(!nested.to_string().contains("sensitive-nested-value-canary"));
         let requests = upstream.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/jwks");
