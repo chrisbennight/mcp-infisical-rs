@@ -5,6 +5,11 @@ The release workflow prepares a Linux/amd64 OCI image for
 native archive in the release metadata artifact. It does not deploy a service
 or update a rolling `latest` tag. Other platforms have not been qualified.
 
+The v0.2.2 source adds schema-derived argument corrections with declared field
+paths, nullable types, enum choices, and bounded alternative constraints.
+Rejected values and unknown property names are withheld, and invalid arguments
+are refused before an Infisical request begins.
+
 ## Compiler and client qualification
 
 The digest-pinned Rust 1.96.1 builder supplies the bootstrap toolchain and Debian
