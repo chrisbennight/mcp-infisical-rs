@@ -91,8 +91,40 @@ fn property<'a>(schema: &'a Value, root: &'a Value, name: &str, depth: usize) ->
 }
 
 fn constraints(schema: &Value, root: &Value) -> String {
-    let Some(schema) = resolve(schema, root, 0) else {
+    let mut remaining = 16;
+    let mut truncated = false;
+    let selected = constraint_projection(schema, root, 0, &mut remaining, &mut truncated);
+    if selected.as_object().is_none_or(Map::is_empty) {
         return "see the operation's inputSchema".into();
+    }
+    let text = selected.to_string();
+    if text.chars().count() > 1024 {
+        format!(
+            "{}… (truncated; see inputSchema)",
+            text.chars().take(1024).collect::<String>()
+        )
+    } else if truncated {
+        format!("{text} (truncated; see inputSchema)")
+    } else {
+        text
+    }
+}
+
+fn constraint_projection(
+    schema: &Value,
+    root: &Value,
+    depth: usize,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> Value {
+    if depth >= 4 || *remaining == 0 {
+        *truncated = true;
+        return json!({});
+    }
+    *remaining -= 1;
+    let Some(schema) = resolve(schema, root, 0) else {
+        *truncated = true;
+        return json!({});
     };
     let mut selected = Map::new();
     for key in [
@@ -116,25 +148,29 @@ fn constraints(schema: &Value, root: &Value) -> String {
         );
         if properties.len() > 12 {
             selected.insert("propertiesTruncated".into(), true.into());
+            *truncated = true;
         }
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
-        if schema.get(keyword).is_some() {
-            selected.insert("alternatives".into(), keyword.into());
+        if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+            if branches.len() > 8 {
+                *truncated = true;
+            }
+            selected.insert(
+                keyword.into(),
+                Value::Array(
+                    branches
+                        .iter()
+                        .take(8)
+                        .map(|branch| {
+                            constraint_projection(branch, root, depth + 1, remaining, truncated)
+                        })
+                        .collect(),
+                ),
+            );
         }
     }
-    if selected.is_empty() {
-        return "see the operation's inputSchema".into();
-    }
-    let text = Value::Object(selected).to_string();
-    if text.chars().count() > 1024 {
-        format!(
-            "{}… (truncated; see inputSchema)",
-            text.chars().take(1024).collect::<String>()
-        )
-    } else {
-        text
-    }
+    Value::Object(selected)
 }
 
 #[cfg(test)]
@@ -238,5 +274,32 @@ mod tests {
         );
         assert!(!error.message.contains("sensitive-key-canary"));
         assert!(!error.message.contains("sensitive-value-canary"));
+    }
+
+    #[test]
+    fn alternatives_explain_nullable_types_and_enum_choices() {
+        let schema = json!({"anyOf":[
+            {"allOf":[{"type":"string"},{"enum":["shared","personal"]}]},
+            {"type":"null"}
+        ]});
+        let hint = constraints(&schema, &schema);
+        for expected in ["string", "null", "shared", "personal"] {
+            assert!(hint.contains(expected), "missing {expected}: {hint}");
+        }
+        assert!(!hint.contains("truncated"));
+    }
+
+    #[test]
+    fn bounded_alternatives_point_to_the_full_schema() {
+        let schema = json!({"oneOf":vec![json!({"type":"integer","minimum":1}); 20]});
+        let hint = constraints(&schema, &schema);
+        assert!(hint.contains("integer"));
+        assert!(hint.contains("truncated; see inputSchema"));
+        assert_eq!(hint.matches("minimum").count(), 8);
+
+        let schema = json!({"enum":["a".repeat(2048)]});
+        let hint = constraints(&schema, &schema);
+        assert!(hint.contains("truncated; see inputSchema"));
+        assert!(hint.len() < 1100);
     }
 }

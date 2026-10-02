@@ -1436,7 +1436,7 @@ mod tests {
         );
         assert_eq!(error["effect"], "notStarted");
         let nested = call_authenticated_tool(
-            router,
+            router.clone(),
             &identity,
             5,
             "infisical.write",
@@ -1452,6 +1452,24 @@ mod tests {
             "/arguments/target/projectId"
         );
         assert!(!nested.to_string().contains("sensitive-nested-value-canary"));
+        let nullable = call_authenticated_tool(
+            router,
+            &identity,
+            6,
+            "infisical.write",
+            json!({"operation_id":"secrets.create", "arguments":{
+                "target":{"projectId":"fixture","environment":"fixture","path":"/","name":"fixture"},
+                "secretValue":981_742
+            }}),
+        )
+        .await;
+        let error = &nullable["result"]["structuredContent"]["error"];
+        assert_eq!(error["fieldPath"], "/arguments/secretValue");
+        let correction = error["correction"].as_str().unwrap();
+        assert!(correction.contains("string"));
+        assert!(correction.contains("null"));
+        assert_eq!(error["effect"], "notStarted");
+        assert!(!nullable.to_string().contains("981742"));
         let requests = upstream.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/jwks");
