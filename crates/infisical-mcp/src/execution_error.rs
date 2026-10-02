@@ -45,7 +45,7 @@ pub(crate) struct ExecutionError {
     operation: Option<String>,
     /// Safe schema path; never includes a rejected value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    field_path: Option<&'static str>,
+    field_path: Option<String>,
     /// Stable failure class; no classification requires parsing the message.
     category: Category,
     /// Whether the final action was not initiated or its outcome is uncertain.
@@ -191,7 +191,15 @@ impl ExecutionError {
                 Recovery::CorrectRequest,
                 error.message,
             );
-            result.field_path = Some("arguments");
+            result.field_path = Some(
+                error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("argumentFieldPath"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("arguments")
+                    .to_owned(),
+            );
             result.preflight_observations_possible = Some(false);
             return result;
         }

@@ -16741,7 +16741,7 @@ fn parse_arguments<T>(
     message: &'static str,
 ) -> Result<T, McpError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + JsonSchema,
 {
     // Transfer ownership so secret deserializers receive the original strings
     // instead of leaving ordinary-string duplicates in the request map.
@@ -16749,7 +16749,8 @@ where
         .arguments
         .take()
         .map_or_else(|| Value::Object(Map::new()), Value::Object);
-    serde_json::from_value(arguments).map_err(|_| McpError::invalid_params(message, None))
+    serde_path_to_error::deserialize(arguments)
+        .map_err(|error| crate::argument_error::correction(&error, &schema_value::<T>(), message))
 }
 
 fn invalid_input(error: impl Display) -> McpError {
@@ -17331,7 +17332,7 @@ mod tests {
 
     fn assert_unknown_field_rejected<T>(name: &'static str, arguments: &Value)
     where
-        T: DeserializeOwned,
+        T: DeserializeOwned + schemars::JsonSchema,
     {
         let Err(error) = parse_arguments::<T>(
             &mut request(name, arguments),

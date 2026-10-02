@@ -1092,6 +1092,13 @@ protocol errors. Invalid sensitive values are never repeated in correction text.
 Errors stay inline even when successful results request file delivery; retained
 delivery references in oversized-result errors remain usable until expiration.
 
+Typed argument errors identify the declared field with a JSON Pointer in
+`fieldPath`, or its nearest declared parent when an input supplies an unknown
+property. Corrections name missing required fields and include bounded declared
+constraints or accepted properties. Submitted values and unknown property names
+never appear in these corrections. Valid requests keep the same deserialization
+and secret-transfer behavior.
+
 ## Project and environment administration
 
 The product release pin and the route namespace are independent. For Infisical
