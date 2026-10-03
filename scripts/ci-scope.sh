@@ -36,6 +36,7 @@ else
       Cargo.toml|Cargo.lock|rust-toolchain.toml|rust-toolchain|crates/*/Cargo.toml) rust=true; deps=true; catalog=true; host=true; image=true ;;
       .cargo/*) rust=true ;;
       rustfmt.toml|.rustfmt.toml|clippy.toml|.clippy.toml) rust=true ;;
+      crates/infisical-server/tests/standalone.rs|crates/infisical-server/tests/support/*) rust=true; image=true ;;
       crates/*/tests/*|crates/*/benches/*|crates/*/test-fixtures/*|testdata/*) rust=true ;;
       crates/*/*.md) docs=true ;;
       crates/*) rust=true; catalog=true; host=true; image=true ;;
