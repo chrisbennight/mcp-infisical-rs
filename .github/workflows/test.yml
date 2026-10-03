@@ -38,7 +38,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash scripts/ci-scope.sh
       - name: Ensure cargo is available
-        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true'
+        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true' || steps.scope.outputs.image == 'true'
         run: |
           if ! command -v cargo >/dev/null 2>&1; then
             curl -fsSL -o /tmp/rustup-init \
@@ -65,7 +65,7 @@ jobs:
       # here rather than committed: a checked-in mirror would be a hard
       # dependency on a host that resolves only on the LAN.
       - name: Point cargo at the crate proxy
-        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true'
+        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true' || steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           if [ -z "${CRATES_INDEX_URL:-}" ]; then
