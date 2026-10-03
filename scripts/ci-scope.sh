@@ -41,9 +41,9 @@ else
       crates/*) rust=true; catalog=true; host=true; image=true ;;
       Dockerfile|.dockerignore|scripts/qualify_image.py|scripts/prepare_release.py|scripts/check_image_security.py|LICENSE|THIRD_PARTY_NOTICES.md)
         image=true ;;
-      host-client/*|scripts/generate_host_client.py) host=true ;;
+      host-client/*|scripts/generate_host_client.py) host=true; catalog=true ;;
       api-coverage/*) catalog=true ;;
-      security/*|scripts/check_advisories.py) deps=true ;;
+      security/*|scripts/check_advisories.py) deps=true; image=true ;;
       docs/generated-catalog.md|docs/workflows.json|scripts/catalog_summary.py) catalog=true ;;
       docs/tool-surface.md|gateway-manifest.yaml) rust=true ;;
     esac

@@ -204,6 +204,10 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare image security evidence directory
+        if: steps.scope.outputs.image == 'true'
+        run: mkdir -p .security
+
       - name: Scan runtime image
         if: steps.scope.outputs.image == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
