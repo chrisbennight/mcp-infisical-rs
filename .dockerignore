@@ -1,6 +1,7 @@
 .git
 .gitea
 .github
+.worktrees
 .env
 .env.*
 !.env.example

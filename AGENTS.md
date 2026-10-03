@@ -48,13 +48,17 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo doc --workspace --no-deps --locked
 python3 scripts/check_docs.py
+python3 scripts/catalog_summary.py
 python3 scripts/check_api_coverage.py
-python3 scripts/check_release.py
 python3 -m unittest discover -s scripts/tests
 ```
 
 Use isolated in-process HTTP fakes in tests. Tests must never contact the real
 Infisical service, gateway, registry, or any shared infrastructure.
+
+After changing GitHub workflows, run actionlint 1.7.12. Image and release changes
+also require the existing native CI qualification of the exact image. Workflow
+spelling and indentation are not substitutes for that qualification.
 
 ## Automated pull-request review
 

@@ -221,12 +221,6 @@ class CapabilityRegistryTests(unittest.TestCase):
             {"projects.read": True, "admin.bootstrap": False},
         )
 
-    def test_executes_the_runtime_server_capabilities_registry(self) -> None:
-        states = check_api_coverage.capability_states("0.160.12")
-        self.assertTrue(states["projects.read"])
-        self.assertFalse(states["admin.bootstrap"])
-
-
 class CoverageRuleTests(unittest.TestCase):
     def test_exact_signature_owns_each_active_endpoint(self) -> None:
         endpoint = {

@@ -1,6 +1,14 @@
 # Dependency and image security evidence
 
-CI checks the complete lockfile against a freshly fetched RustSec database. It
+When the dependency graph or advisory policy changes, CI checks the complete
+lockfile against a freshly fetched RustSec database. Manual validation and version
+releases select all checks. Ordinary documentation edits check links without
+compiling Rust; compiled catalog validation runs separately for catalog inputs.
+Runtime and image packaging changes select the native image qualification and
+scan. Missing Git history fails selection. Existing check names remain required
+even when their costly steps are skipped.
+
+The advisory check
 retains the unfiltered report, the database commit and update time, scanner
 version, and a disposition for each vulnerability. A missing database revision,
 database older than 14 days, scanner error, filtered report, or unexcepted

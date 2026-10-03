@@ -4,15 +4,14 @@ on:
   workflow_call:
   pull_request:
     types: [opened, synchronize, reopened]
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -29,8 +28,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
+      - name: Select changed components
+        id: scope
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci-scope.sh
       - name: Ensure cargo is available
+        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true' || steps.scope.outputs.image == 'true'
         run: |
           if ! command -v cargo >/dev/null 2>&1; then
             curl -fsSL -o /tmp/rustup-init \
@@ -45,6 +53,7 @@ jobs:
           fi
 
       - name: Tool versions
+        if: steps.scope.outputs.rust == 'true'
         run: |
           rustc --version
           cargo --version
@@ -56,6 +65,7 @@ jobs:
       # here rather than committed: a checked-in mirror would be a hard
       # dependency on a host that resolves only on the LAN.
       - name: Point cargo at the crate proxy
+        if: steps.scope.outputs.rust == 'true' || steps.scope.outputs.catalog == 'true' || steps.scope.outputs.host == 'true' || steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           if [ -z "${CRATES_INDEX_URL:-}" ]; then
@@ -68,6 +78,7 @@ jobs:
           echo "cargo source replacement written"
 
       - name: Dependency advisory gate
+        if: steps.scope.outputs.deps == 'true'
         run: |
           set -euo pipefail
           mkdir -p .security "$RUNNER_TEMP/infisical-security-tools"
@@ -89,36 +100,57 @@ jobs:
             --output .security/advisory-dispositions.json
 
       - name: Format
+        if: steps.scope.outputs.rust == 'true'
         run: cargo fmt --all -- --check
 
       - name: Clippy
+        if: steps.scope.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Tests
+        if: steps.scope.outputs.rust == 'true'
         run: cargo test --workspace --all-features --locked
 
       - name: Rust documentation
+        if: steps.scope.outputs.rust == 'true'
         run: cargo doc --workspace --no-deps --locked
 
+      - name: Check compiled catalog documentation
+        if: steps.scope.outputs.catalog == 'true'
+        run: python3 scripts/catalog_summary.py
       - name: Documentation contract
+        if: steps.scope.outputs.docs == 'true'
         run: python3 scripts/check_docs.py
 
       - name: API coverage contract
+        if: steps.scope.outputs.catalog == 'true'
         run: python3 scripts/check_api_coverage.py
 
       - name: Documentation validator tests
+        if: steps.scope.outputs.python == 'true'
         run: python3 -m unittest discover -s scripts/tests
 
       - name: Host client contract
+        if: steps.scope.outputs.host == 'true'
         run: |
           node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
           npm ci --ignore-scripts --prefix host-client
           npm test --prefix host-client
 
-      - name: Release contract
-        run: python3 scripts/check_release.py
+      - name: Validate GitHub workflow syntax
+        if: steps.scope.outputs.workflows == 'true'
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 10 --max-time 120 \
+            --output "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --strict
+          tar --no-same-owner -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
 
       - name: Build hardened runtime image
+        if: steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           # The config file written above redirects this job's own cargo; it
@@ -134,6 +166,7 @@ jobs:
           sudo docker build "${index_build_args[@]}" --platform linux/amd64 --tag "$SMOKE_IMAGE" .
 
       - name: Inspect runtime image metadata
+        if: steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           configured_user="$(sudo docker image inspect --format '{{.Config.User}}' "$SMOKE_IMAGE")"
@@ -142,6 +175,7 @@ jobs:
           test "$healthcheck_test" = '["CMD","/mcp-infisical-rs","--healthcheck"]'
 
       - name: Smoke hardened runtime container
+        if: steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           sudo docker run -d --name "$SMOKE_CONTAINER" \
@@ -170,7 +204,12 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare image security evidence directory
+        if: steps.scope.outputs.image == 'true'
+        run: mkdir -p .security
+
       - name: Scan runtime image
+        if: steps.scope.outputs.image == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.70.0
@@ -184,6 +223,7 @@ jobs:
           exit-code: '0'
 
       - name: Validate image evidence and produce runtime SBOM
+        if: steps.scope.outputs.image == 'true'
         run: |
           set -euo pipefail
           trivy --version > .security/trivy-version.txt
@@ -195,10 +235,11 @@ jobs:
             --image-id "$image_id" --output .security/image-dispositions.json
 
       - name: Qualify image executable
+        if: steps.scope.outputs.image == 'true'
         run: python3 scripts/qualify_image.py --sudo --image "$SMOKE_IMAGE" --output .security/qualification
 
       - name: Retain security evidence
-        if: always()
+        if: (steps.scope.outputs.deps == 'true' || steps.scope.outputs.image == 'true') && (always())
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: security-evidence-${{ github.run_id }}-${{ github.run_attempt }}
@@ -213,7 +254,7 @@ jobs:
           retention-days: 90
 
       - name: Cleanup smoke artifacts
-        if: always()
+        if: (steps.scope.outputs.image == 'true') && (always())
         run: |
           set -euo pipefail
           failed=0

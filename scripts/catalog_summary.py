@@ -125,8 +125,8 @@ def render(policy: dict, capabilities: dict, workflows: list[dict] | None = None
     lines = [
         "# Generated catalog summary", "",
         "Generated from the executable `operation_policy` and `server_capabilities` exports.",
-        "Run `python3 scripts/catalog_summary.py --write` to regenerate; ordinary",
-        "documentation validation checks this file for drift.", "",
+        "Run `python3 scripts/catalog_summary.py --write` to regenerate;",
+        "catalog validation checks this file for drift.", "",
         f"Schema revision: `{revision}`. Pinned upstream: `{identifier(capabilities['targetInfisicalVersion'])}`.", "",
         f"This build serves **{len(operations)} operations**. The separate capability ledger has",
         f"**{sum(item['available'] for item in ledger)} implemented** and",
