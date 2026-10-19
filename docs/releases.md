@@ -105,6 +105,15 @@ Release metadata records the source commit, version, platform, image digest,
 declared dependency licenses, runtime SBOM, image vulnerability scan and
 dispositions, scanner version, and the project and upstream-documentation
 notices. On successful publication, `SHA256SUMS` covers those metadata files.
+Source metadata also records the GitHub run ID and attempt. The artifact name
+includes both identities, so a failed attempt's evidence remains separate from
+a later rerun. Consumers must match the source metadata and immutable digest to
+the successful publication attempt; an older artifact from the same run is not
+evidence for a rebuild. Final digest recording refuses metadata from a different
+attempt. These records contain no deployment settings or credentials.
+Initial preparation requires an empty evidence directory and preserves existing
+files on refusal. Retain a previous attempt's evidence separately before starting
+a new preparation; rerunning preparation cannot relabel old qualification files.
 See [Security evidence](security-evidence.md) for policy and expiring exceptions.
 Verify the checksums after extraction:
 
