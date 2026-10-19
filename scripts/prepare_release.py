@@ -53,6 +53,16 @@ def write_checksums(output: Path) -> None:
     (output / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
 
 
+def build_identity(environment: dict[str, str]) -> dict[str, int]:
+    identity = {}
+    for variable, field in (("GITHUB_RUN_ID", "run_id"), ("GITHUB_RUN_ATTEMPT", "run_attempt")):
+        value = environment.get(variable, "")
+        if not re.fullmatch(r"[1-9][0-9]*", value):
+            raise ValueError("release requires a valid GitHub build identity")
+        identity[field] = int(value)
+    return identity
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record-digest", action="store_true")
@@ -69,8 +79,17 @@ def main() -> None:
         cwd=ROOT, check=True,
     )
     output = ROOT / ".release"
+    source = {
+        "repository": "https://github.com/chrisbennight/mcp-infisical-rs",
+        "commit": commit,
+        "tag": tag,
+        "platform": "linux/amd64",
+        **build_identity(os.environ),
+    }
     output.mkdir(exist_ok=True)
     if args.record_digest:
+        if json.loads((output / "source.json").read_text()) != source:
+            raise ValueError("release metadata does not match the current build attempt")
         digest = os.environ.get("IMAGE_DIGEST", "")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             raise ValueError("registry returned an invalid image digest")
@@ -85,12 +104,7 @@ def main() -> None:
         allowed = set(json.loads((ROOT / "scripts/release-license-expressions.json").read_text()))
         inventory = dependency_inventory(metadata, allowed)
         (output / "dependencies.json").write_text(json.dumps(inventory, indent=2) + "\n")
-        (output / "source.json").write_text(json.dumps({
-            "repository": "https://github.com/chrisbennight/mcp-infisical-rs",
-            "commit": commit,
-            "tag": tag,
-            "platform": "linux/amd64",
-        }, indent=2) + "\n")
+        (output / "source.json").write_text(json.dumps(source, indent=2) + "\n")
         for filename in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
             (output / filename).write_bytes((ROOT / filename).read_bytes())
     write_checksums(output)
