@@ -86,6 +86,8 @@ def main() -> None:
         "platform": "linux/amd64",
         **build_identity(os.environ),
     }
+    if not args.record_digest and output.exists() and any(output.iterdir()):
+        raise ValueError("release preparation requires an empty evidence directory")
     output.mkdir(exist_ok=True)
     if args.record_digest:
         if json.loads((output / "source.json").read_text()) != source:

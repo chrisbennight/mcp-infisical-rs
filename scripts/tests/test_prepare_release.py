@@ -49,6 +49,25 @@ class ReleasePreparationTests(unittest.TestCase):
                 PREPARE.main()
             self.assertFalse((output / 'image-digest.txt').exists())
 
+    def test_preparation_does_not_relabel_retained_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Cargo.toml').write_text('[workspace.package]\nversion="0.2.2"\n')
+            output = root / '.release'
+            output.mkdir()
+            for name in ('source.json', 'image-digest.txt', 'qualification.json'):
+                (output / name).write_bytes(b'previous attempt evidence')
+            before = {path.name: path.read_bytes() for path in output.iterdir()}
+            environment = {'GITHUB_REF': 'refs/tags/v0.2.2', 'GITHUB_SHA': 'a' * 40,
+                           'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2'}
+            with patch.object(PREPARE, 'ROOT', root), patch.dict(os.environ, environment), \
+                 patch.object(PREPARE, 'git', return_value='a' * 40), \
+                 patch.object(PREPARE.subprocess, 'run'), \
+                 patch('sys.argv', ['prepare_release.py']), \
+                 self.assertRaisesRegex(ValueError, 'empty evidence directory'):
+                PREPARE.main()
+            self.assertEqual({path.name: path.read_bytes() for path in output.iterdir()}, before)
+
     def test_only_matching_stable_version_tags_are_accepted(self) -> None:
         self.assertEqual(PREPARE.validate_tag("refs/tags/v0.1.0", "0.1.0"), "v0.1.0")
         for ref in ("refs/heads/main", "refs/tags/v0.2.0", "refs/tags/v0.1.0-rc1", "refs/tags/v0.1.0\n", "refs/tags/--help"):

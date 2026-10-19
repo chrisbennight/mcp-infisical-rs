@@ -111,6 +111,9 @@ a later rerun. Consumers must match the source metadata and immutable digest to
 the successful publication attempt; an older artifact from the same run is not
 evidence for a rebuild. Final digest recording refuses metadata from a different
 attempt. These records contain no deployment settings or credentials.
+Initial preparation requires an empty evidence directory and preserves existing
+files on refusal. Retain a previous attempt's evidence separately before starting
+a new preparation; rerunning preparation cannot relabel old qualification files.
 See [Security evidence](security-evidence.md) for policy and expiring exceptions.
 Verify the checksums after extraction:
 
