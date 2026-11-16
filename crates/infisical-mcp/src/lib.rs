@@ -6,9 +6,9 @@ use infisical_api::InfisicalClient;
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, CustomRequest, CustomResult, ErrorCode,
+        CallToolRequestParams, CallToolResponse, CustomRequest, CustomResult, ErrorCode,
         Implementation, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-        ServerCapabilities, ServerInfo,
+        ServerCapabilities, ServerConfig,
     },
     service::RequestContext,
 };
@@ -119,8 +119,8 @@ pub fn operation_policy_payload() -> serde_json::Value {
 }
 
 impl ServerHandler for InfisicalMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new(
                 "mcp-infisical-rs",
@@ -141,7 +141,7 @@ impl ServerHandler for InfisicalMcp {
         &self,
         params: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         tools::dispatch_with_profile(
             &self.client,
             self.files.as_deref(),
@@ -150,6 +150,7 @@ impl ServerHandler for InfisicalMcp {
             params,
         )
         .await
+        .map(Into::into)
     }
 
     fn on_custom_request(

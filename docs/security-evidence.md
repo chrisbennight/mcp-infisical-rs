@@ -40,13 +40,18 @@ vulnerabilities.
 
 ## Artifact identity and retention
 
-The final image uses a digest-pinned `base-nossl-debian12` runtime with CA
+The final image uses a digest-pinned `base-nossl-debian13` runtime with CA
 certificates and a non-root user. It copies the required GCC support library,
 package records, and copyright notices from a separately pinned official
 Distroless image. The application uses Rustls; unused OpenSSL libraries are
 excluded after the image gate identified CVE-2026-84782 in the previous base.
 Native health checks, hardened image smoke tests, complete runtime inventory,
 and fresh vulnerability evidence remain publication requirements.
+
+The runtime follows the [maintained Distroless image family](https://github.com/GoogleContainerTools/distroless#what-images-are-available).
+Timezone data and CA certificates come from that pinned base rather than a
+separate package overlay. The Rust build stage remains independently pinned;
+runtime compatibility is established by the native image qualification checks.
 
 The pull-request scan must match the smoke image's immutable local image ID.
 Release publication first builds a uniquely tagged candidate with build
@@ -77,26 +82,69 @@ Exceptions cannot use package or version wildcards, cannot apply to a different
 registry in the lockfile, and cannot exempt an OS package through a Rust package
 exception. Changes require the repository's normal pull-request review gate.
 
+The separate `imageExceptions` array accepts OS findings only for an exact
+distribution, CVE, package, and installed version. Debian exceptions use the
+scanner's `debian` package type. They require the same owner, review date,
+expiry, and rationale, with the same maximum lifetime. They never exempt Rust
+findings. The original scanner severity and full finding remain in the evidence;
+acceptance is recorded as a temporary exception rather than a severity rewrite.
+
+The maintainers accepted CVE-2026-100290 and CVE-2026-115819 for the pinned Debian
+`libc6` version while the scanner's HIGH classification is investigated.
+[Upstream glibc](https://sourceware.org/pipermail/libc-announce/2026/000068.html)
+scores them low and medium, respectively. Debian currently lists both as unfixed
+and minor/no-DSA for trixie. This acceptance does not establish that the affected
+functions are unreachable. The exact scope and expiration are recorded in the
+policy file; other high, critical, and unknown findings continue to block.
+
 Do not renew an exception just to make CI pass. Recheck the upstream advisory,
 available patches, enabled features, reachable operations, and the consequences
 of changing them. Preserve the old reports. A package upgrade requires a new
 disposition if its version remains affected.
 
-## Baseline assessment: 25 September 2026
+## Dependency assessments
 
-`cargo-audit 0.22.2` scanned the original 351-package lockfile using database
+The initial assessment on 25 September 2026 used `cargo-audit 0.22.2` to scan the
+original 351-package lockfile using database
 commit `593df8c1b5ed0bcde9dddadfeeead776fa514ff8`, updated 24 September 2026.
 No advisory, platform, or severity filters were applied. The targeted dependency
-updates were rescanned against that database.
+updates were rescanned against that database. The table also records subsequent
+assessments against refreshed databases.
 
 | Advisory | Original dependency | Disposition |
 | --- | --- | --- |
 | [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258.html) | `h2 0.4.15` | Update to patched `0.4.16`. |
 | [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html) | `rustls 0.23.42` | Update to patched `0.23.45`, with its compatible AWS-LC and WebPKI dependencies. |
-| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) | `rsa 0.9.10` | Temporary exception through 23 November 2026; expiry is 24 November. No patched release was available. |
+| [RUSTSEC-2026-0457](https://rustsec.org/advisories/RUSTSEC-2026-0457.html), [RUSTSEC-2026-0462](https://rustsec.org/advisories/RUSTSEC-2026-0462.html) | `rmcp 2.2.0` | Update the SDK to stable `3.10.0`, preserving the server's declared protocol and stateless transport. |
+| [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538.html) | `quinn-udp 0.5.15` | Update to patched `0.5.16`. |
+| [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382.html), [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383.html) | `rustls-webpki 0.103.15`, `webpki-root-certs 1.0.9` | Update to patched stable releases with compatible AWS-LC dependencies. |
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) | `rsa 0.9.10` | Existing temporary exception through 23 November 2026; expiry is 24 November. No compatible update through the current stable SSH dependency. |
+| [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html) | `crypto-bigint 0.5.5` | Temporary exception for the inspected public-verification paths; exact expiry and scope are in the policy file. |
 
-The updated lockfile scan retains only the RSA vulnerability. That is a
-lockfile result, not a claim about a future image scan or future database.
+Fresh reports remain authoritative for the resolved lockfile and final image;
+these dispositions do not predict future advisory databases.
+
+## Curve arithmetic reachability and stable consumers
+
+The timing advisory for `crypto-bigint` concerns arithmetic on secret integers.
+The dependency is retained by the P-256/P-384 curve stack behind `ssh-key` and
+`jsonwebtoken/rust_crypto`. Production JWT verification accepts only Ed25519.
+SSH certificate validation performs public signature verification. Local
+certificate signing in tests uses isolated fixture keys; production signing and
+key generation are delegated to Infisical.
+
+The inspected `ssh-key 0.6.7` OpenSSH ECDSA decoder reads the encoded private
+scalar into bytes and copies the supplied public coordinates. The conversion
+used to compare its public component does not derive a public key or perform
+big-integer arithmetic. DER and PKCS#8 private-key parsing uses AWS-LC instead.
+No affected production arithmetic on secret integers was identified. This is a
+bounded source assessment, not a proof about every future dependency or caller.
+
+The patched `crypto-bigint` release requires a newer curve stack. The current
+stable `ssh-key` release cannot consume it; its newer release is a prerelease.
+The temporary exception preserves supported SSH verification with stable
+dependencies. Reassess when local signing, key generation, algorithm acceptance,
+crypto features, or the SSH dependency changes, and before the recorded expiry.
 
 ## RSA reachability and feature assessment
 
