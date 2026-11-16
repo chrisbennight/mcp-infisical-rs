@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use crate::files::SecretFilePlane;
 
+pub mod approval;
 mod argument_error;
 mod collection_cost;
 mod discovery;

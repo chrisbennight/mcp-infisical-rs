@@ -17,6 +17,7 @@ a client over stdio or HTTP, and make a first project metadata call.
 | Check implemented and unavailable API families | [API coverage](api-coverage.md) |
 | Configure HTTP authentication, limits, and file transfer | [HTTP configuration](http-configuration.md) |
 | Understand credentials and trust boundaries | [Architecture](architecture.md) |
+| Understand the human approval capability under development | [Human approval](human-approval.md) |
 | Add an upstream gateway | [Optional gateway integration](gateway-rollout.md) |
 | Restrict startup capabilities and enforce operation policy | [Operation policy](operation-policy.md) |
 | Report a vulnerability | [Security](../SECURITY.md) |
