@@ -444,32 +444,32 @@ struct EmptyInput {}
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServerInfoOutput {
-    /// Stable gateway catalog identifier for this MCP server.
+    /// Server identifier.
     #[schemars(extend("const" = "infisical"))]
     name: &'static str,
-    /// Semantic build version of the running server.
+    /// Semantic build version.
     #[schemars(regex(pattern = r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"))]
     version: &'static str,
-    /// MCP protocol revision implemented by the server.
+    /// MCP protocol revision.
     #[schemars(extend("const" = "2025-11-25"))]
     protocol_version: &'static str,
-    /// Transport currently serving this handler.
+    /// Active transport.
     transport: Transport,
-    /// HTTP authentication profile; absent when no HTTP profile applies.
+    /// HTTP authentication profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     http_profile: Option<crate::runtime::HttpProfile>,
-    /// Discovery schema revision for client cache keys, alongside the build version.
+    /// Schema revision for caching.
     schema_revision: &'static str,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct ServerCapabilitiesOutput {
-    /// Discovery schema revision for client cache keys.
+    /// Schema revision for caching.
     schema_revision: &'static str,
-    /// Infisical release whose API contract this build targets.
+    /// Target Infisical release.
     target_infisical_version: &'static str,
-    /// Infisical capabilities compiled into this server build.
+    /// Compiled capabilities.
     capabilities: Vec<Capability>,
     /// Effective deployment facts; omitted by offline build-catalog export.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -481,7 +481,7 @@ struct ServerCapabilitiesOutput {
 struct Capability {
     /// Stable capability identifier.
     name: &'static str,
-    /// Whether this build implements the capability through Universal Auth; does not prove deployment readiness, permission, or license entitlement.
+    /// Implemented here; upstream permission and licensing are not probed.
     available: bool,
     /// Static explanation when the capability is unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -9387,6 +9387,22 @@ pub(crate) fn catalog() -> ListToolsResult {
         .materialize(),
     ];
     tools.extend(executor_tools());
+    tools.push(
+        Tool::new(
+            "approval.session",
+            "Inspect or close human approval. Keep approvalToken private.",
+            Arc::new(schema_object::<crate::approval::SessionInput>()),
+        )
+        .with_title("Approval session")
+        .with_raw_output_schema(Arc::new(schema_object::<crate::approval::SessionOutput>()))
+        .with_annotations(
+            ToolAnnotations::with_title("Approval session")
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        ),
+    );
 
     ListToolsResult {
         tools,
@@ -10812,26 +10828,26 @@ impl OperationTierFilter {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationsListInput {
-    /// Return only operations served by this tier's executor.
+    /// Filter by executor tier.
     tier: Option<OperationTierFilter>,
-    /// Return only operations whose name starts with this text, such as `secrets.`.
+    /// Name prefix, such as secrets.
     #[schemars(length(max = 64))]
     name_prefix: Option<String>,
-    /// Intent words matched against names, descriptions, and reviewed aliases.
+    /// Search names, descriptions and aliases.
     #[schemars(length(min = 1, max = 128))]
     query: Option<String>,
-    /// Matching records to skip; retain filters when continuing.
+    /// Offset; retain search filters.
     #[serde(default)]
     #[schemars(range(max = 10_000))]
     offset: usize,
-    /// Maximum records to return.
+    /// Maximum records.
     #[serde(default = "default_discovery_limit")]
     #[schemars(range(min = 1))]
     limit: usize,
-    /// Return complete descriptions instead of brief summaries.
+    /// Return full descriptions.
     #[serde(default)]
     full_descriptions: bool,
-    /// Include the exact input schema so a selected match can be executed directly.
+    /// Include each argument schema.
     #[serde(default)]
     include_input_schema: bool,
 }
@@ -10843,15 +10859,15 @@ const fn default_discovery_limit() -> usize {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationSummary {
-    /// Operation name passed to an executor.
+    /// Operation name.
     name: String,
-    /// Executor that serves this operation.
+    /// Serving executor.
     executor: &'static str,
-    /// Tier the operation was declared at.
+    /// Operation tier.
     tier: &'static str,
-    /// What the operation does.
+    /// Purpose.
     description: String,
-    /// Arguments schema, when requested.
+    /// Optional argument schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<SchemaDocument>")]
     input_schema: Option<Value>,
@@ -10860,13 +10876,13 @@ struct OperationSummary {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationsListOutput {
-    /// Matching page, ranked by query relevance then exact name.
+    /// Matches ranked by relevance, then name.
     operations: Vec<OperationSummary>,
-    /// Operations enabled in this instance, before search filtering.
+    /// Total enabled operations.
     total: usize,
-    /// Operations matching the filters before pagination.
+    /// Total matches.
     matched: usize,
-    /// Continuation offset; absent when this is the final page.
+    /// Next offset, if more matches exist.
     #[serde(skip_serializing_if = "Option::is_none")]
     next_offset: Option<usize>,
 }
@@ -10874,7 +10890,7 @@ struct OperationsListOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OperationsDescribeInput {
-    /// Exact operation name, as returned by `operations.list`.
+    /// Name from operations.list.
     #[schemars(length(min = 3, max = 128))]
     #[serde(
         rename = "operation_id",
@@ -10883,7 +10899,7 @@ struct OperationsDescribeInput {
         alias = "tool"
     )]
     operation: String,
-    /// Include the output schema; false returns only the input schema.
+    /// Include the result schema.
     #[serde(default = "include_output_schema_by_default")]
     include_output_schema: bool,
 }
@@ -10895,23 +10911,23 @@ const fn include_output_schema_by_default() -> bool {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationsDescribeOutput {
-    /// Collection paging cost; offset pages are independent reads, not a snapshot.
+    /// Paging cost; pages are not a snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pagination: Option<crate::collection_cost::PaginationKind>,
-    /// Operation the schemas belong to.
+    /// Operation name.
     name: String,
-    /// Executor that accepts this operation.
+    /// Serving executor.
     executor: &'static str,
-    /// Tier the operation was declared at.
+    /// Operation tier.
     tier: &'static str,
-    /// What the operation does.
+    /// Purpose.
     description: String,
-    /// Deployment prerequisites; permission and entitlement are not probed by discovery.
+    /// Deployment prerequisites; upstream access is not probed.
     availability: OperationAvailability,
-    /// Schema for the executor's `arguments` field.
+    /// Operation argument schema.
     #[schemars(with = "SchemaDocument")]
     input_schema: Value,
-    /// Schema of the structured result.
+    /// Structured result schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<SchemaDocument>")]
     output_schema: Option<Value>,
@@ -10920,13 +10936,13 @@ struct OperationsDescribeOutput {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct OperationAvailability {
-    /// This operation is compiled into the service.
+    /// Compiled support.
     implemented: bool,
-    /// Whether this instance satisfies mandatory local delivery requirements, independent of upstream authorization.
+    /// Local delivery prerequisites satisfied.
     enabled_here: bool,
-    /// Whether execution requires a configured file-transfer extension and a file-aware client.
+    /// A file-aware client and transfer plane are required.
     requires_file_transfer: bool,
-    /// Upstream permission and license entitlement have not been tested.
+    /// Upstream access is not probed.
     upstream_access: &'static str,
 }
 
@@ -10934,7 +10950,14 @@ struct OperationAvailability {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExecuteInput {
-    /// Name from operations.list, belonging to this executor's tier.
+    /// Approval token from a prior rejection.
+    #[serde(
+        default,
+        deserialize_with = "crate::approval::deserialize_optional_token"
+    )]
+    #[schemars(with = "Option<String>", length(min = 43, max = 43))]
+    approval_token: Option<crate::approval::ApprovalToken>,
+    /// Name from operations.list.
     #[schemars(length(min = 3, max = 128))]
     #[serde(
         rename = "operation_id",
@@ -10943,17 +10966,17 @@ struct ExecuteInput {
         alias = "tool"
     )]
     operation: String,
-    /// Arguments matching the discovered schema.
+    /// Operation arguments.
     #[serde(default, alias = "args")]
     arguments: Map<String, Value>,
-    /// file returns resultFile through transfer; default inline.
+    /// inline (default) or file.
     #[serde(default)]
     #[schemars(with = "ResultDeliveryMode")]
     result_delivery: Option<ResultDeliveryMode>,
 }
 
 // Whole-result delivery mode; the field's doc carries the caller-facing text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 enum ResultDeliveryMode {
     File,
@@ -10962,6 +10985,7 @@ enum ResultDeliveryMode {
 
 /// Static operation facts with independently lazy Rust-derived schemas.
 struct OperationDefinition {
+    approval_validator: OnceLock<jsonschema::Validator>,
     name: &'static str,
     description: &'static str,
     tier: ToolTier,
@@ -11089,6 +11113,8 @@ pub(crate) fn operation_policy_payload() -> Value {
     serde_json::json!({
         "schemaRevision": SCHEMA_REVISION,
         "executionErrorSchema": schema_value::<crate::execution_error::ExecutionError>(),
+        "approvalRequiredSchema": schema_value::<crate::approval::ApprovalRequiredOutput>(),
+        "approvalSessionSchema": schema_value::<crate::approval::SessionOutput>(),
         "fileResultSchema": schema_value::<FileDeliveredResult>(),
         "operations": operations,
     })
@@ -11114,35 +11140,25 @@ fn executor_tools() -> Vec<Tool> {
 const fn executor_description(tier: ToolTier) -> &'static str {
     match tier {
         ToolTier::Read => {
-            "Run a repeatable metadata read. Discover with operations.list or operations.describe. \
-             Example: {\"operation_id\": \"projects.list\", \"arguments\": {\"limit\": 20}}. \
-             Names and tier are checked before upstream access. Safe to repeat after transport failure. \
-             Audited reads, including secrets.reveal, use infisical.readAudited."
+            "Run a repeatable read. Example: {\"operation_id\":\"projects.list\",\"arguments\":{\"limit\":20}}. \
+             Discover arguments with operations.describe. Safe to repeat after transport failure."
         }
         ToolTier::ReadAudited => {
-            "Run a read that Infisical records as an access event. \
-             Example: {\"operation_id\": \"auditLogs.list\", \"arguments\": \
-             {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"limit\": 20}}. \
-             Sent once and never replayed; repeating records another access. Discover with \
-             operations.list or operations.describe. Repeatable reads use infisical.read."
+            "Read that Infisical records as access. Example: {\"operation_id\":\"auditLogs.list\",\"arguments\":{}}. \
+             Sent once and never replayed; repeating records another access. Discover arguments with operations.describe."
         }
         ToolTier::Write => {
-            "Apply one non-destructive change. Example: {\"operation_id\": \
-             \"secrets.create\", \"arguments\": {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
-             \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \
-             \"secretValue\": \"sk-live-example\"}}. \
-             Sent once and never replayed; after failure, read current state before retrying. \
-             Consult operations.describe for confirmations. \
-             Deletions and revocations use infisical.destroy."
+            "Change resources; sent once, never replayed. \
+             Example: {\"operation_id\":\"projects.create\",\"arguments\":{\"name\":\"Example\"}}. \
+             Discover arguments and confirmations with operations.describe. \
+             Inspect state after failure. Delete/revoke with infisical.destroy."
         }
         ToolTier::Destroy => {
-            "Apply one destructive change. Most are irreversible; \
-             environments.delete is a soft delete that environments.restore undoes. Example: {\"operation_id\": \"secrets.delete\", \"arguments\": \
-             {\"target\": {\"projectId\": \"3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071\", \"environment\": \"prod\", \
-             \"path\": \"/payments\", \"name\": \"STRIPE_API_KEY\"}, \"confirm\": true}}. Confirmation is required except for \
-             dynamicSecretLeases.create; some writes require it too. Consult operations.describe. \
-             Sent once and never replayed; reconcile the effect before retrying after failure. \
-             Other changes use infisical.write."
+            "Run a destructive operation; sent once, never replayed. Reconcile failures. \
+             Example: {\"operation_id\":\"projects.delete\",\"arguments\":{\"projectId\":\"project-1\",\"confirm\":true}}. \
+             Use operations.describe. Confirmation required except for \
+             dynamicSecretLeases.create; some writes need it. \
+             environments.delete is a soft delete undone by environments.restore."
         }
     }
 }
@@ -11241,6 +11257,7 @@ where
     Output: JsonSchema,
 {
     OperationDefinition {
+        approval_validator: OnceLock::new(),
         name,
         description,
         tier,
@@ -11637,17 +11654,46 @@ pub(crate) async fn dispatch_with_runtime(
     dispatch_with_profile(client, files, runtime, OperationProfile::Full, params).await
 }
 
+#[cfg(test)]
 pub(crate) async fn dispatch_with_profile(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
     runtime: &RuntimeSettings,
     profile: OperationProfile,
+    params: CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    dispatch_with_approval(client, files, runtime, profile, None, params).await
+}
+
+pub(crate) async fn dispatch_with_approval(
+    client: &InfisicalClient,
+    files: Option<&SecretFilePlane>,
+    runtime: &RuntimeSettings,
+    profile: OperationProfile,
+    approval: Option<&crate::approval::ApprovalContext<'_>>,
     mut params: CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     if !is_published_tool(params.name.as_ref()) {
         return Err(McpError::method_not_found::<
             rmcp::model::CallToolRequestMethod,
         >());
+    }
+
+    if params.name == "approval.session" {
+        let input = parse_arguments::<crate::approval::SessionInput>(
+            &mut params,
+            "approval.session arguments do not match its schema",
+        )?;
+        return structured(match approval {
+            Some(context) => context
+                .service
+                .session(&context.owner, input)
+                .map_err(|error| McpError::invalid_params(error.to_string(), None))?,
+            None => crate::approval::SessionOutput {
+                enabled: false,
+                session: None,
+            },
+        });
     }
 
     let tool = params.name.clone();
@@ -11672,12 +11718,16 @@ pub(crate) async fn dispatch_with_profile(
     let result = if is_local_discovery(params.name.as_ref()) {
         dispatch_local(
             &mut params,
-            runtime.capabilities(client, files),
+            {
+                let mut capabilities = runtime.capabilities(client, files);
+                capabilities.human_approval = approval.is_some();
+                capabilities
+            },
             files.is_some(),
             profile,
         )?
     } else {
-        dispatch_tool(client, files, params).await?
+        dispatch_tool_with_approval(client, files, params, approval).await?
     };
     Ok(enforce_result_budget(
         operation.unwrap_or(tool.as_ref()),
@@ -11740,13 +11790,15 @@ fn unknown_operation_name(name: &str) -> McpError {
 /// through the read executor and inherit its approval treatment. Both checks
 /// happen before the request reaches any handler, and an unknown name is
 /// rejected outright rather than defaulting to a tier.
+#[allow(clippy::too_many_lines)]
 async fn dispatch_executor(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
     tier: ToolTier,
     mut params: CallToolRequestParams,
+    approval: Option<&crate::approval::ApprovalContext<'_>>,
 ) -> Result<CallToolResult, McpError> {
-    let request = parse_arguments::<ExecuteInput>(
+    let mut request = parse_arguments::<ExecuteInput>(
         &mut params,
         "executor arguments must be an operation name and that operation's arguments",
     )?;
@@ -11770,39 +11822,130 @@ async fn dispatch_executor(
         ));
     }
 
-    // Resolved before the upstream call, like the reveal delivery argument: a
-    // refusal or a full plane must cost the caller a retry, never a non-replayed
-    // operation that already ran.
-    let result_slot = match reserve_result_delivery(files, request.result_delivery) {
-        Ok(slot) => slot,
-        Err(error) => {
-            return Ok(crate::execution_error::name_error(
-                &request.operation,
-                crate::execution_error::ExecutionError::from_handler(error).into_result(),
+    let (client, guard) = if let Some(context) = approval {
+        let definition = operation_definition(&request.operation).expect("validated operation");
+        let validator = definition.approval_validator.get_or_init(|| {
+            jsonschema::validator_for(&Value::Object(definition.input_schema().as_ref().clone()))
+                .expect("compiled operation schema")
+        });
+        let mut effective = Map::new();
+        effective.insert(
+            "arguments".into(),
+            Value::Object(std::mem::take(&mut request.arguments)),
+        );
+        effective.insert(
+            "resultDelivery".into(),
+            serde_json::to_value(request.result_delivery).expect("delivery enum"),
+        );
+        let mut effective = Value::Object(effective);
+        if !validator.is_valid(&effective["arguments"]) {
+            return Err(McpError::invalid_params(
+                "Arguments do not match the operation schema. Use operations.describe to correct the request.",
+                None,
             ));
         }
+        let scope = approval_scope(definition.name, &effective["arguments"])?;
+        let permit = match context.service.authorize(
+            &context.owner,
+            definition.name,
+            &effective,
+            scope,
+            request.approval_token.take(),
+        ) {
+            Ok(permit) => permit,
+            Err(result) => return Ok(result),
+        };
+        request.arguments = match effective
+            .as_object_mut()
+            .expect("effective request")
+            .remove("arguments")
+            .expect("effective arguments")
+        {
+            Value::Object(arguments) => arguments,
+            _ => unreachable!("arguments were constructed as an object"),
+        };
+        let guard = context.service.guard(permit);
+        (
+            client.clone().with_submission_guard(Arc::clone(&guard)),
+            Some(guard),
+        )
+    } else {
+        (client.clone(), None)
     };
+    let execute = async {
+        // Resolved before the upstream call, like the reveal delivery argument: a
+        // refusal or a full plane must cost the caller a retry, never a non-replayed
+        // operation that already ran.
+        let result_slot = match reserve_result_delivery(files, request.result_delivery) {
+            Ok(slot) => slot,
+            Err(error) => {
+                return Ok(crate::execution_error::name_error(
+                    &request.operation,
+                    crate::execution_error::ExecutionError::from_handler(error).into_result(),
+                ));
+            }
+        };
 
-    // Move the operation's arguments rather than copying them, so a secret in
-    // the request is deserialized once into its redacting type instead of
-    // leaving a plain copy behind in this envelope.
-    let operation = request.operation;
-    params.name = Cow::Owned(operation.clone());
-    params.arguments = Some(request.arguments);
+        // Move the operation's arguments rather than copying them, so a secret in
+        // the request is deserialized once into its redacting type instead of
+        // leaving a plain copy behind in this envelope.
+        let operation = request.operation;
+        params.name = Cow::Owned(operation.clone());
+        params.arguments = Some(request.arguments);
 
-    // The published dispatch boundary sizes the final result once, after any
-    // requested file delivery has replaced the payload with its reference.
-    let result = match dispatch_tool(client, files, params).await {
-        Ok(result) => result,
-        Err(error) => crate::execution_error::ExecutionError::from_handler(error).into_result(),
+        // The published dispatch boundary sizes the final result once, after any
+        // requested file delivery has replaced the payload with its reference.
+        let result = match dispatch_tool(&client, files, params).await {
+            Ok(result) => result,
+            Err(error) => crate::execution_error::ExecutionError::from_handler(error).into_result(),
+        };
+        let result = match result_slot {
+            Some(slot) => {
+                deliver_result_as_file(&operation, slot, result).unwrap_or_else(|error| {
+                    crate::execution_error::ExecutionError::from_handler(error).into_result()
+                })
+            }
+            None => result,
+        };
+        Ok(crate::execution_error::name_error(&operation, result))
     };
-    let result = match result_slot {
-        Some(slot) => deliver_result_as_file(&operation, slot, result).unwrap_or_else(|error| {
-            crate::execution_error::ExecutionError::from_handler(error).into_result()
-        }),
-        None => result,
+    crate::files::with_access(
+        approval.map(|context| context.owner.clone()),
+        guard,
+        execute,
+    )
+    .await
+}
+
+fn approval_scope(
+    operation: &str,
+    arguments: &Value,
+) -> Result<Option<crate::approval::ProjectEnvironment>, McpError> {
+    // These adapters correspond to the exact namespace each typed handler consumes.
+    // Imports and mixed-environment batches cannot grant a single namespace scope.
+    let coordinates = match operation {
+        SECRET_METADATA_LIST_TOOL | FOLDERS_LIST_TOOL => arguments,
+        FOLDERS_CREATE_TOOL => &arguments["parent"],
+        FOLDERS_UPDATE_TOOL | FOLDERS_DELETE_TOOL => &arguments["target"]["parent"],
+        SECRET_REVEAL_TOOL | SECRET_CREATE_TOOL | SECRET_UPDATE_TOOL | SECRET_DELETE_TOOL => {
+            &arguments["target"]
+        }
+        SECRET_BATCH_CREATE_TOOL | SECRET_BATCH_UPDATE_TOOL | SECRET_BATCH_DELETE_TOOL => {
+            &arguments["scope"]
+        }
+        _ => return Ok(None),
     };
-    Ok(crate::execution_error::name_error(&operation, result))
+    let project = coordinates["projectId"]
+        .as_str()
+        .ok_or_else(unknown_operation)?;
+    let environment = coordinates["environment"]
+        .as_str()
+        .ok_or_else(unknown_operation)?;
+    ProjectId::new(project.to_owned()).map_err(invalid_input)?;
+    EnvironmentSlug::new(environment.to_owned()).map_err(invalid_input)?;
+    crate::approval::ProjectEnvironment::new(project.to_owned(), environment.to_owned())
+        .map(Some)
+        .map_err(|error| McpError::invalid_params(error.to_string(), None))
 }
 
 fn reserve_result_delivery(
@@ -11884,10 +12027,19 @@ fn take_payload_wiping_text(result: &mut CallToolResult) -> Option<Value> {
 pub(crate) async fn dispatch_tool(
     client: &InfisicalClient,
     files: Option<&SecretFilePlane>,
+    params: CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    dispatch_tool_with_approval(client, files, params, None).await
+}
+
+async fn dispatch_tool_with_approval(
+    client: &InfisicalClient,
+    files: Option<&SecretFilePlane>,
     mut params: CallToolRequestParams,
+    approval: Option<&crate::approval::ApprovalContext<'_>>,
 ) -> Result<CallToolResult, McpError> {
     if let Some(tier) = executor_tier(params.name.as_ref()) {
-        return Box::pin(dispatch_executor(client, files, tier, params)).await;
+        return Box::pin(dispatch_executor(client, files, tier, params, approval)).await;
     }
     if is_local_discovery(params.name.as_ref()) {
         return dispatch_local(

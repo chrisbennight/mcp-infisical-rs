@@ -29,6 +29,29 @@ The five local discovery tools contact nothing and return build metadata,
 capability descriptions, or schemas, so they are low risk and carry no personal
 data. The four executors are high risk and marked for personal data.
 
+The `approval.session` tool is low risk, has side effects because it can close
+permission, and is marked for personal data. Its scope is the authenticated
+owner and the supplied approval token. Include this explicit manifest entry
+when refreshing the served catalog.
+
+## Human approval through a gateway
+
+The optional [human approval capability](human-approval.md) uses the same
+executor arguments and structured results over direct and gateway HTTP. A
+gateway must preserve the executor's optional `approvalToken`, the
+`approvalRequired` tool error, its public link, and its inactive token. Keep
+the token in the authorized host rather than ordinary model-facing output.
+The human follows the link through Authentik; the host retries explicitly with
+the original token after approval. Do not translate this into an automatic
+mutation retry or substitute a gateway-wide approval token.
+
+Each call still requires the service bearer and signed caller identity.
+Approval belongs to the verified issuer, subject, and calling actor. Preserve
+those identities across retries; another caller cannot borrow permission or
+close the session. Permit authenticated discovery and `approval.session` while
+work is pending. A compatible gateway needs no custom approval HTTP header,
+elicitation support, or persistent MCP transport session.
+
 That is coarser than it was. The gateway authorizes on the tool name, and an
 executor carries every operation of its tier, so the gateway can no longer tell
 `projects.list` from `secrets.reveal` — both arrive as `infisical.read`. Each

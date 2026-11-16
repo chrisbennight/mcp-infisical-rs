@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::files::SecretFilePlane;
 
 /// Revision of the discovery schemas; clients must include it in cache keys.
-pub const SCHEMA_REVISION: &str = "2026-10-01.2";
+pub const SCHEMA_REVISION: &str = "2026-11-16.1";
 
 /// gateway: bearer plus identity JWT; standalone: bearer only.
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
@@ -51,18 +51,20 @@ pub enum Transport {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuntimeCapabilities {
+    /// Approval required; use approvalToken and approval.session.
+    pub human_approval: bool,
     /// Enabled operation profile.
     pub operation_profile: crate::policy::OperationProfile,
     /// Active transport.
     pub transport: Transport,
-    /// HTTP authentication; omitted outside HTTP.
+    /// HTTP authentication profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_profile: Option<HttpProfile>,
-    /// Enforced size, concurrency and time limits.
+    /// Enforced limits.
     limits: RuntimeLimits,
-    /// Supported secret and whole-result delivery.
+    /// Secret and result delivery.
     delivery: DeliveryCapabilities,
-    /// Permissions and license were not probed.
+    /// Upstream access is not probed.
     #[schemars(extend("const" = "notProbed"))]
     upstream_access: &'static str,
 }
@@ -70,37 +72,37 @@ pub(crate) struct RuntimeCapabilities {
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeLimits {
-    /// HTTP body or stdio message byte limit; omitted if undeclared.
+    /// HTTP body or stdio message bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_request_bytes: Option<usize>,
-    /// Concurrent HTTP limit; omitted outside HTTP.
+    /// Concurrent HTTP requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_concurrent_requests: Option<usize>,
-    /// HTTP deadline in seconds; omitted outside HTTP.
+    /// HTTP deadline, seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_timeout_seconds: Option<f64>,
-    /// Upstream body byte limit before local filtering.
+    /// Upstream bytes before filtering.
     upstream_response_bytes: usize,
-    /// Shared upstream concurrency limit, including login.
+    /// Upstream concurrency, including login.
     upstream_max_concurrent_requests: usize,
-    /// Upstream deadline seconds including queueing; login is separate.
+    /// Upstream deadline including queueing, seconds.
     upstream_request_timeout_seconds: f64,
-    /// MCP result byte limit, including compatibility text.
+    /// MCP bytes including compatibility text.
     tool_result_bytes: usize,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct DeliveryCapabilities {
-    /// Default secret-value delivery.
+    /// Default secret delivery.
     default_secret_delivery: &'static str,
-    /// Secret modes; reference needs a file-aware host.
+    /// Secret delivery modes.
     secret_modes: Vec<&'static str>,
-    /// Executor whole-result delivery modes.
+    /// Whole-result delivery modes.
     result_modes: Vec<&'static str>,
-    /// Whether typed uploads are supported.
+    /// Typed upload support.
     upload_references: bool,
-    /// In-memory file limits; omitted when disabled.
+    /// In-memory transfer limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     file_transfer: Option<crate::files::FileCapabilities>,
 }
@@ -131,6 +133,7 @@ impl RuntimeSettings {
                 ),
             };
         RuntimeCapabilities {
+            human_approval: false,
             operation_profile: crate::policy::OperationProfile::Full,
             transport,
             http_profile,

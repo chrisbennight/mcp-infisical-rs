@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Infisical MCP approvals</title>
+  <link rel="stylesheet" href="/approval/app.css">
+  <script src="/approval/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">Infisical MCP</p><h1>Human approval</h1>
+      <p>Choose what a client may do. Approval activates permission; the client must retry to start work.</p>
+      <p id="identity">Loading your approval context…</p>
+    </header>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <div class="section-heading"><h2>Requests and active approvals</h2><button id="refresh" type="button">Refresh</button></div>
+    <section id="requests" aria-label="Approval requests"></section>
+    <section><h2>Recent decisions</h2><p class="muted">History is bounded and cleared when this server restarts.</p><div id="history"></div></section>
+    <footer>Approval never replaces the client's normal authentication or upstream permissions. Revocation blocks new work; it cannot undo work already submitted.</footer>
+  </main>
+</body>
+</html>

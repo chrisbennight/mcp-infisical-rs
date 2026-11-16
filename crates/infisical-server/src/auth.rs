@@ -24,7 +24,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
-const IDENTITY_HEADER: &str = "x-mcp-identity";
+pub(crate) const IDENTITY_HEADER: &str = "x-mcp-identity";
 const MINIMUM_BEARER_BYTES: usize = 32;
 const MAXIMUM_JWKS_BYTES: usize = 64 * 1024;
 const CLOCK_SKEW_SECONDS: i64 = 30;
@@ -62,7 +62,7 @@ impl GatewayBearers {
         })
     }
 
-    fn accepts(&self, supplied: &[u8]) -> bool {
+    pub(crate) fn accepts(&self, supplied: &[u8]) -> bool {
         let current = constant_time_equal(supplied, self.current.expose_secret().as_bytes());
         let previous = self.previous.as_ref().map_or(Choice::from(0), |value| {
             constant_time_equal(supplied, value.expose_secret().as_bytes())
@@ -472,6 +472,8 @@ struct AuthErrorBody {
     error: &'static str,
 }
 
+/// # Panics
+/// Panics only if the built-in standalone identity stops satisfying identity validation.
 pub async fn require_mcp_authentication(
     State(auth): State<IngressAuth>,
     mut request: Request,
@@ -506,12 +508,28 @@ pub async fn require_mcp_authentication(
             }
             Err(_) => return unauthorized(),
         };
+        if let Ok(owner) = infisical_mcp::approval::ApprovalOwner::new(
+            verifier.settings.issuer.clone(),
+            principal.subject.clone(),
+            principal.actor_subject.clone(),
+        ) {
+            request.extensions_mut().insert(owner);
+        }
         request.extensions_mut().insert(principal);
+    } else {
+        request.extensions_mut().insert(
+            infisical_mcp::approval::ApprovalOwner::new(
+                "standalone".into(),
+                "connection".into(),
+                "connection".into(),
+            )
+            .expect("static standalone identity"),
+        );
     }
     next.run(request).await
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let raw = single_header(headers, header::AUTHORIZATION.as_str())?;
     let (scheme, token) = raw.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("bearer") {
@@ -526,7 +544,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     Some(token)
 }
 
-fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let mut values = headers.get_all(name).iter();
     let value = values.next()?;
     if values.next().is_some() {
@@ -535,7 +553,7 @@ fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     value.to_str().ok()
 }
 
-fn allowed_host(headers: &HeaderMap, allowed: &[String]) -> bool {
+pub(crate) fn allowed_host(headers: &HeaderMap, allowed: &[String]) -> bool {
     single_header(headers, header::HOST.as_str())
         .map(str::to_ascii_lowercase)
         .is_some_and(|host| allowed.iter().any(|candidate| candidate == &host))

@@ -8,6 +8,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Category {
+    ApprovalRequired,
     Validation,
     Authentication,
     PermissionDenied,
@@ -31,6 +32,7 @@ pub(crate) enum Effect {
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Recovery {
+    ObtainApproval,
     CorrectRequest,
     Wait,
     Reconcile,
@@ -91,11 +93,22 @@ impl ExecutionError {
         result
     }
 
+    pub(crate) fn for_operation(mut self, operation: &str) -> Self {
+        self.operation = Some(operation.to_owned());
+        self
+    }
+
     pub(crate) fn from_client(error: &ClientError) -> Self {
         use Category as C;
         use Effect::Unknown;
         use Recovery as R;
         let mut result = match error {
+            ClientError::SubmissionDenied => Self::new(
+                C::PermissionDenied,
+                Unknown,
+                R::Reconcile,
+                "Approval expired or was withdrawn before the next upstream request. Reconcile earlier steps and obtain fresh approval before retrying.",
+            ),
             ClientError::WorkBudgetExhausted => Self::new(
                 C::Capacity,
                 Unknown,

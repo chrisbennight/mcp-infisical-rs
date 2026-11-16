@@ -1,4 +1,4 @@
-import { HostClient } from './client.js';
+import { ApprovalRequiredError, HostClient } from './client.js';
 
 /** Keep complete pages in the host and return only a bounded project summary. */
 export async function summarizeProjects(client: HostClient, maximumPages = 10): Promise<{
@@ -12,6 +12,7 @@ export async function summarizeProjects(client: HostClient, maximumPages = 10): 
   let offset = 0;
   for (let page = 0; page < maximumPages; page++) {
     const outcome = await client.invoke('projects.list', { limit: 100, offset, includeDetails: false });
+    if (outcome.kind === 'approvalRequired') throw new ApprovalRequiredError(outcome.approval, outcome.error);
     if (outcome.kind === 'error') throw new Error('Project inventory failed; inspect the wrapped error in the host');
     const result = outcome.value.read();
     for (const project of result.items) selected.set(project.id, { id: project.id, name: project.name });
@@ -32,6 +33,7 @@ export async function summarizeProjectEnvironments(client: HostClient, namePrefi
   const projects = [];
   for (const project of matches.slice(0, 10)) {
     const outcome = await client.invoke('environments.list', { projectId: project.id, limit: 100 });
+    if (outcome.kind === 'approvalRequired') throw new ApprovalRequiredError(outcome.approval, outcome.error);
     if (outcome.kind === 'error') throw new Error('Environment inventory failed; inspect the wrapped error in the host');
     const result = outcome.value.read();
     if (result.projectId !== project.id) throw new Error('Environment result does not match the requested project');

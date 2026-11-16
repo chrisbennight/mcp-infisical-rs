@@ -189,10 +189,13 @@ async fn run_server(settings: Settings, host: &str, port: u16) -> anyhow::Result
         wait_for_shutdown_signal().await;
         cancellation.cancel();
     };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .context("serve MCP HTTP endpoint")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .context("serve MCP HTTP endpoint")?;
     Ok(ExitCode::SUCCESS)
 }
 

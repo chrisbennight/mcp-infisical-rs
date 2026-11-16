@@ -39,9 +39,10 @@ credential-rotation parameter and secret-mapping contract.
 
 ## Published catalog
 
-A client sees nine tools. Five are local and contact nothing: `server.info`,
+A client sees ten tools. Five provide local discovery: `server.info`,
 `server.capabilities`, `operations.list`, `operations.describe`, and
-`types.describe`. The other four are executors, one per operation tier:
+`types.describe`. The local `approval.session` control reports remaining human
+permission or closes it without contacting Infisical. Four executors serve the operation tiers:
 `infisical.read`, `infisical.readAudited`, `infisical.write`, and
 `infisical.destroy`.
 
@@ -55,6 +56,14 @@ An executor takes an `operation_id` and that operation's own `arguments`.
 returns one operation's input and output schema on demand. Names are discovered
 there rather than repeated in every connection's initial catalog. Dispatch
 rejects unknown names and wrong-tier calls before contacting Infisical.
+
+When [human approval](human-approval.md) is enabled, every executor additionally
+requires `approvalToken`. An initial unapproved call returns a structured
+`approvalRequired` rejection, public approval URL, and inactive token before
+Infisical work. The human approves separately; the client explicitly retries
+with that token. `approval.session` accepts `approvalToken` and optional
+`action: "status" | "close"`; it remains available while approval is pending.
+Tokens supplement the existing authentication, operation profile, and confirmations.
 
 Describe and executor calls also accept hidden `name`, `operation`, or `tool`
 spellings for `operation_id`; executors accept `args` for `arguments`.

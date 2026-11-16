@@ -52,6 +52,23 @@ fn version_reports_the_workspace_package_version() {
 }
 
 #[test]
+fn human_approval_cannot_be_silently_bypassed_using_stdio() {
+    let output = Command::new(server_binary())
+        .args(["--transport", "stdio"])
+        .env_clear()
+        .env("INFISICAL_MCP_HUMAN_APPROVAL_ENABLED", "true")
+        .output()
+        .expect("server command must start");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("human approval requires HTTP transport")
+    );
+}
+
+#[test]
 fn server_fails_closed_when_gateway_credentials_are_missing() {
     let output = Command::new(server_binary())
         .env_remove("INFISICAL_MCP_BEARER_CURRENT")

@@ -3,6 +3,11 @@
 For the standalone Quickstart, see [Standalone connections](standalone.md).
 The signed-identity requirements below apply only to the gateway profile.
 
+Both HTTP profiles support optional [human approval](human-approval.md),
+including the global enable setting, Authentik proxy contract, public dashboard,
+duration controls, client token lifecycle, and deployment procedure. Approval
+never replaces the ingress authentication described here.
+
 `INFISICAL_MCP_OPERATION_PROFILE` independently selects `metadata`, `secrets`,
 `pkiSsh`, or `full` capabilities in every transport. See [Operation policy](operation-policy.md).
 

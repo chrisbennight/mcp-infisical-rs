@@ -68,6 +68,7 @@ impl ClientSettings {
 #[derive(Clone)]
 pub struct InfisicalClient {
     inner: Arc<ClientInner>,
+    submission_guard: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 struct ClientInner {
@@ -254,6 +255,24 @@ impl InfisicalClient {
         Self::new_with_system_resolver(settings, SystemResolver)
     }
 
+    /// Recheck host-owned permission immediately before each operation HTTP submission.
+    ///
+    /// The callback is synchronous and must not call this client. It is checked again
+    /// after waiting for authentication or capacity. Already submitted work cannot be
+    /// withdrawn. Shared machine authentication outlives its initiating operation.
+    #[must_use]
+    pub fn with_submission_guard(mut self, guard: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.submission_guard = Some(guard);
+        self
+    }
+
+    fn check_submission(&self) -> Result<(), ClientError> {
+        if self.submission_guard.as_ref().is_some_and(|guard| !guard()) {
+            return Err(ClientError::SubmissionDenied);
+        }
+        Ok(())
+    }
+
     fn new_with_system_resolver<R>(
         settings: ClientSettings,
         system_resolver: R,
@@ -275,6 +294,7 @@ impl InfisicalClient {
             .build()
             .map_err(|_| ClientConfigError::HttpClient)?;
         Ok(Self {
+            submission_guard: None,
             inner: Arc::new(ClientInner {
                 request_slots: Semaphore::new(settings.max_concurrent_requests),
                 settings,
@@ -464,6 +484,7 @@ impl InfisicalClient {
     }
 
     async fn access_token(&self) -> Result<Arc<CachedToken>, ClientError> {
+        self.check_submission()?;
         if let Some(token) = self.fresh_token().await {
             return Ok(token);
         }
@@ -483,6 +504,7 @@ impl InfisicalClient {
             }
         }
         coordinator.failure = None;
+        self.check_submission()?;
 
         let mut receiver = if let Some(receiver) = coordinator.in_flight.as_ref() {
             receiver.clone()
@@ -490,7 +512,10 @@ impl InfisicalClient {
             let (sender, receiver) = watch::channel(None);
             coordinator.in_flight = Some(receiver.clone());
             let flight_identity = receiver.clone();
-            let client = self.clone();
+            let client = Self {
+                inner: Arc::clone(&self.inner),
+                submission_guard: None,
+            };
             // Refresh work outlives its initiating caller so cancellation cannot
             // strand waiters or provoke a duplicate login.
             let _refresh_task = tokio::spawn(async move {
@@ -652,6 +677,7 @@ impl InfisicalClient {
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or(ClientError::WorkBudgetExhausted)?;
+        self.check_submission()?;
         let mut response = request
             .timeout(remaining)
             .send()
@@ -835,6 +861,8 @@ pub enum ClientConfigError {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ClientError {
+    #[error("host permission expired or was withdrawn before this HTTP request was submitted")]
+    SubmissionDenied,
     #[error(
         "Infisical request concurrency budget was busy until the request deadline; this HTTP request was not sent"
     )]
@@ -1135,6 +1163,65 @@ mod tests {
     #[derive(Serialize)]
     struct TestMutation {
         value: String,
+    }
+
+    #[tokio::test]
+    async fn revoked_host_permission_stops_a_queued_submission_without_sending_it() {
+        let server = MockServer::start().await;
+        mount_login(&server, "isolated-guard-token").await;
+        let mut config = settings(&server);
+        config.max_concurrent_requests = 1;
+        let client = InfisicalClient::new(config).unwrap();
+        client.access_token().await.unwrap();
+        let held = client.inner.request_slots.acquire().await.unwrap();
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let guarded = client.clone().with_submission_guard(Arc::new({
+            let active = Arc::clone(&active);
+            let entered = Arc::clone(&entered);
+            move || {
+                let allowed = active.load(Ordering::SeqCst);
+                entered.notify_one();
+                allowed
+            }
+        }));
+        let pending = tokio::spawn(async move {
+            guarded
+                .execute_mutation::<TestMutationOperation>(&TestMutation {
+                    value: "isolated-value".into(),
+                })
+                .await
+        });
+        entered.notified().await;
+        active.store(false, Ordering::SeqCst);
+        drop(held);
+        assert_eq!(
+            pending.await.unwrap().unwrap_err(),
+            ClientError::SubmissionDenied
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn denied_host_permission_does_not_even_start_machine_authentication() {
+        let server = MockServer::start().await;
+        let client = InfisicalClient::new(settings(&server))
+            .unwrap()
+            .with_submission_guard(Arc::new(|| false));
+        assert_eq!(
+            client.execute_read::<TestRead>(&[]).await.unwrap_err(),
+            ClientError::SubmissionDenied
+        );
+        assert_eq!(
+            client
+                .execute_mutation::<TestMutationOperation>(&TestMutation {
+                    value: "isolated-value".into()
+                })
+                .await
+                .unwrap_err(),
+            ClientError::SubmissionDenied
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

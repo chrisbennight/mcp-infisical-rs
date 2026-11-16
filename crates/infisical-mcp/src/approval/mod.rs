@@ -14,9 +14,17 @@ use std::{
 
 use aws_lc_rs::{digest, hmac};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use schemars::JsonSchema;
 use serde::{Serialize, Serializer, ser::SerializeMap};
 use serde_json::Value;
 use zeroize::Zeroizing;
+
+mod service;
+pub(crate) use service::ApprovalRequiredOutput;
+pub use service::ApprovalService;
+pub(crate) use service::{
+    ApprovalContext, SessionInput, SessionOutput, deserialize_optional_token,
+};
 
 /// Authenticated ownership, supplied by the host rather than MCP arguments.
 #[derive(Clone, PartialEq, Eq, Serialize)]
@@ -68,25 +76,27 @@ fn identity(value: &str) -> bool {
 }
 
 /// Exact resource scope proven by the typed operation adapter.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEnvironment {
+    /// Exact Infisical project identifier.
     project_id: String,
-    environment_id: String,
+    /// Environment coordinate used by this operation's typed API request.
+    environment: String,
 }
 
 impl ProjectEnvironment {
-    /// Use stable resource identifiers, never a mutable display name or inferred scope.
+    /// Use the exact project identifier and environment coordinate consumed by the API.
     ///
     /// # Errors
     /// Returns an error for invalid scope identifiers.
-    pub fn new(project_id: String, environment_id: String) -> Result<Self, ApprovalError> {
-        if !identity(&project_id) || !identity(&environment_id) {
+    pub fn new(project_id: String, environment: String) -> Result<Self, ApprovalError> {
+        if !identity(&project_id) || !identity(&environment) {
             return Err(ApprovalError::ScopeMismatch);
         }
         Ok(Self {
             project_id,
-            environment_id,
+            environment,
         })
     }
 }
@@ -164,7 +174,7 @@ impl Default for ApprovalLimits {
 }
 
 /// State visible to an authenticated client or human approval surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ApprovalState {
     Pending,
@@ -177,7 +187,7 @@ pub enum ApprovalState {
 }
 
 /// The capability the human chose for this session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ApprovalMode {
     Once,
@@ -185,18 +195,29 @@ pub enum ApprovalMode {
     ProjectEnvironment,
 }
 
-/// Public metadata; it contains no token, arguments, or argument fingerprints.
-#[derive(Clone, Debug, Serialize)]
+/// Public metadata; it contains no tokens, credential values, or argument fingerprints.
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalSession {
+    /// Public request identifier; never an authorization credential.
     pub session_id: String,
+    /// Registry operation that requested approval.
     pub operation: &'static str,
+    /// Current approval lifecycle state.
     pub state: ApprovalState,
+    /// Permission chosen by the human, if decided.
     pub mode: Option<ApprovalMode>,
+    /// Exact project/environment restriction available for this operation.
     pub requested_scope: Option<ProjectEnvironment>,
+    /// Bounded identifier and coordinate preview; never a complete argument dump.
+    pub target: std::collections::BTreeMap<String, String>,
+    /// Independently authenticated human who decided.
     pub approved_by: Option<String>,
+    /// Seconds since the request was created.
     pub age_seconds: u64,
+    /// Seconds remaining; querying never extends permission.
     pub remaining_seconds: u64,
+    /// Single-use allowance; absent for timed permission.
     pub remaining_uses: Option<u8>,
 }
 
@@ -212,6 +233,7 @@ pub struct PreparedApproval {
     operation: &'static str,
     fingerprint: [u8; 32],
     scope: Option<ProjectEnvironment>,
+    target: std::collections::BTreeMap<String, String>,
 }
 
 /// A human's decision; scoped approval always uses the request's proven scope.
@@ -239,7 +261,7 @@ pub struct ApprovalPermit {
 }
 
 /// A value-free event suitable for a host-owned required audit destination.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalEvent {
     pub kind: ApprovalEventKind,
@@ -364,6 +386,7 @@ impl Session {
             state: self.state,
             mode: self.mode,
             requested_scope: self.request.scope.clone(),
+            target: self.request.target.clone(),
             approved_by: self.human.clone(),
             age_seconds: now.saturating_duration_since(self.created).as_secs(),
             remaining_seconds: remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0),
@@ -466,10 +489,11 @@ impl ApprovalStore {
             operation,
             fingerprint,
             scope,
+            target: std::collections::BTreeMap::new(),
         })
     }
 
-    /// Ask for human approval without performing the operation or retaining its inputs.
+    /// Ask for human approval without performing the operation or retaining credential inputs.
     ///
     /// # Errors
     /// Returns an error if capacity or the required recording boundary refuses the request.
@@ -536,6 +560,23 @@ impl ApprovalStore {
         let session = owned(&mut sessions, owner, token)?;
         session.refresh(now);
         Ok(session.view(now))
+    }
+
+    /// Snapshot bounded metadata for the independently authenticated human surface.
+    ///
+    /// # Panics
+    /// Panics if the state lock is poisoned.
+    #[must_use]
+    pub fn sessions(&self) -> Vec<(ApprovalOwner, ApprovalSession)> {
+        let mut sessions = self.sessions.lock().expect("approval state lock");
+        let now = self.clock.now();
+        sessions
+            .values_mut()
+            .map(|session| {
+                session.refresh(now);
+                (session.owner.clone(), session.view(now))
+            })
+            .collect()
     }
 
     /// Apply a decision from the host's authenticated human surface.

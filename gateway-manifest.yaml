@@ -43,3 +43,7 @@ tools:
     risk: high
     side_effects: true
     pii: true
+  - name: approval.session
+    risk: low
+    side_effects: true
+    pii: true
