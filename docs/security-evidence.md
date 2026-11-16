@@ -93,10 +93,36 @@ updates were rescanned against that database.
 | --- | --- | --- |
 | [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258.html) | `h2 0.4.15` | Update to patched `0.4.16`. |
 | [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html) | `rustls 0.23.42` | Update to patched `0.23.45`, with its compatible AWS-LC and WebPKI dependencies. |
-| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) | `rsa 0.9.10` | Temporary exception through 23 November 2026; expiry is 24 November. No patched release was available. |
+| [RUSTSEC-2026-0457](https://rustsec.org/advisories/RUSTSEC-2026-0457.html), [RUSTSEC-2026-0462](https://rustsec.org/advisories/RUSTSEC-2026-0462.html) | `rmcp 2.2.0` | Update the SDK to stable `3.10.0`, preserving the server's declared protocol and stateless transport. |
+| [RUSTSEC-2026-0538](https://rustsec.org/advisories/RUSTSEC-2026-0538.html) | `quinn-udp 0.5.15` | Update to patched `0.5.16`. |
+| [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382.html), [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383.html) | `rustls-webpki 0.103.15`, `webpki-root-certs 1.0.9` | Update to patched stable releases with compatible AWS-LC dependencies. |
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) | `rsa 0.9.10` | Existing temporary exception through 23 November 2026; expiry is 24 November. No compatible update through the current stable SSH dependency. |
+| [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html) | `crypto-bigint 0.5.5` | Temporary exception for the inspected public-verification paths; exact expiry and scope are in the policy file. |
 
-The updated lockfile scan retains only the RSA vulnerability. That is a
-lockfile result, not a claim about a future image scan or future database.
+Fresh reports remain authoritative for the resolved lockfile and final image;
+these dispositions do not predict future advisory databases.
+
+## Curve arithmetic reachability and stable consumers
+
+The timing advisory for `crypto-bigint` concerns arithmetic on secret integers.
+The dependency is retained by the P-256/P-384 curve stack behind `ssh-key` and
+`jsonwebtoken/rust_crypto`. Production JWT verification accepts only Ed25519.
+SSH certificate validation performs public signature verification. Local
+certificate signing in tests uses isolated fixture keys; production signing and
+key generation are delegated to Infisical.
+
+The inspected `ssh-key 0.6.7` OpenSSH ECDSA decoder reads the encoded private
+scalar into bytes and copies the supplied public coordinates. The conversion
+used to compare its public component does not derive a public key or perform
+big-integer arithmetic. DER and PKCS#8 private-key parsing uses AWS-LC instead.
+No affected production arithmetic on secret integers was identified. This is a
+bounded source assessment, not a proof about every future dependency or caller.
+
+The patched `crypto-bigint` release requires a newer curve stack. The current
+stable `ssh-key` release cannot consume it; its newer release is a prerelease.
+The temporary exception preserves supported SSH verification with stable
+dependencies. Reassess when local signing, key generation, algorithm acceptance,
+crypto features, or the SSH dependency changes, and before the recorded expiry.
 
 ## RSA reachability and feature assessment
 

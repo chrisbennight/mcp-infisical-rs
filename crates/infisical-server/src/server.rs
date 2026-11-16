@@ -90,7 +90,7 @@ pub fn build_router(
             .with_cancellation_token(cancellation.child_token())
             .with_allowed_hosts(allowed_hosts)
             .with_allowed_origins(allowed_origins)
-            .with_stateful_mode(false)
+            .with_legacy_session_mode(false)
             .with_json_response(true),
     );
 

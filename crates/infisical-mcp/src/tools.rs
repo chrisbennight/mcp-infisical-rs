@@ -9392,6 +9392,9 @@ pub(crate) fn catalog() -> ListToolsResult {
         tools,
         next_cursor: None,
         meta: None,
+        result_type: None,
+        ttl_ms: None,
+        cache_scope: None,
     }
 }
 
