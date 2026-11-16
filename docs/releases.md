@@ -30,7 +30,7 @@ test exit status. No named desktop application is qualified by these fixtures.
 
 | Artifact or client | Qualification boundary |
 |---|---|
-| Linux/amd64 OCI image | Debian 12 runtime, hardened container smoke test, exact executable protocol tests |
+| Linux/amd64 OCI image | Debian 13 runtime, hardened container smoke test, exact executable protocol tests |
 | Linux x86_64 native archive | Same dynamically linked executable, tested on the recorded Linux runner; requires compatible glibc and runtime libraries |
 | Repository stdio JSON-RPC and reqwest HTTP fixtures | MCP 2025-11-25, isolated initialization, discovery, schemas, reads, and delivery checks |
 | macOS, Windows, ARM64, named desktop clients | Not qualified or advertised as supported |

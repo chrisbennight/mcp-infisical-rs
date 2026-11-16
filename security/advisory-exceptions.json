@@ -9,7 +9,39 @@
       "owner": "Repository maintainers",
       "reviewed": "2026-09-25",
       "expires": "2026-11-24",
-      "rationale": "No patched release. The inspected service uses ssh-key RSA public signature verification and private-key parsing, pins gateway JWT verification to Ed25519, and delegates KMS private operations upstream. No local RustCrypto RSA private-decryption call was identified. Keep RSA SSH verification; reassess changes to crypto call paths or features. See docs/security-evidence.md."
+      "rationale": "No compatible patched update through the current stable SSH dependency. The inspected service uses ssh-key RSA public signature verification and private-key parsing, pins gateway JWT verification to Ed25519, and delegates KMS private operations upstream. No local RustCrypto RSA private-decryption call was identified. Keep RSA SSH verification; reassess changes to crypto call paths or features. See docs/security-evidence.md."
+    },
+    {
+      "advisory": "RUSTSEC-2026-0387",
+      "aliases": [],
+      "package": "crypto-bigint",
+      "version": "0.5.5",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-11-16",
+      "expires": "2026-12-16",
+      "rationale": "The advisory concerns timing-dependent arithmetic on secret integers. The inspected production paths use the affected curve stack for public SSH certificate verification only. OpenSSH ECDSA private-key decoding copies encoded scalar bytes and supplied public coordinates without deriving a public key or invoking big-integer arithmetic; DER/PKCS8 parsing uses AWS-LC. JWT verification accepts Ed25519 only. No affected production arithmetic on secret integers was identified. crypto-bigint 0.7.6 is patched, but ssh-key 0.6.7 remains the latest stable release and requires the older curve stack. Retain supported SSH verification and stable dependencies; reassess on changes to local signing, key generation, crypto features, consumers, or expiry. See docs/security-evidence.md and https://rustsec.org/advisories/RUSTSEC-2026-0387.html."
+    }
+  ],
+  "imageExceptions": [
+    {
+      "advisory": "CVE-2026-100290",
+      "distribution": "debian",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-11-16",
+      "expires": "2026-12-16",
+      "rationale": "Explicit maintainer acceptance while the severity discrepancy is investigated. The scanner reports HIGH; glibc upstream scores this issue 3.7 (low), and Debian marks trixie no-DSA/minor with no fixed package listed. Application reachability is not established. Keep the maintained glibc runtime and complete scan evidence; reassess when the package changes or this exception expires. Sources: https://sourceware.org/pipermail/libc-announce/2026/000068.html and https://security-tracker.debian.org/tracker/CVE-2026-100290"
+    },
+    {
+      "advisory": "CVE-2026-115819",
+      "distribution": "debian",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-11-16",
+      "expires": "2026-12-16",
+      "rationale": "Explicit maintainer acceptance while the severity discrepancy is investigated. The scanner reports HIGH; glibc upstream scores this issue 4.8 (medium), and Debian marks trixie no-DSA/minor with no fixed package listed. Application reachability is not established. Keep the maintained glibc runtime and complete scan evidence; reassess when the package changes or this exception expires. Sources: https://sourceware.org/pipermail/libc-announce/2026/000068.html and https://security-tracker.debian.org/tracker/CVE-2026-115819"
     }
   ]
 }
