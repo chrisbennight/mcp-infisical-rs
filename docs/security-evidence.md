@@ -40,13 +40,18 @@ vulnerabilities.
 
 ## Artifact identity and retention
 
-The final image uses a digest-pinned `base-nossl-debian12` runtime with CA
+The final image uses a digest-pinned `base-nossl-debian13` runtime with CA
 certificates and a non-root user. It copies the required GCC support library,
 package records, and copyright notices from a separately pinned official
 Distroless image. The application uses Rustls; unused OpenSSL libraries are
 excluded after the image gate identified CVE-2026-84782 in the previous base.
 Native health checks, hardened image smoke tests, complete runtime inventory,
 and fresh vulnerability evidence remain publication requirements.
+
+The runtime follows the [maintained Distroless image family](https://github.com/GoogleContainerTools/distroless#what-images-are-available).
+Timezone data and CA certificates come from that pinned base rather than a
+separate package overlay. The Rust build stage remains independently pinned;
+runtime compatibility is established by the native image qualification checks.
 
 The pull-request scan must match the smoke image's immutable local image ID.
 Release publication first builds a uniquely tagged candidate with build
