@@ -10,11 +10,42 @@ import re
 import sys
 from pathlib import Path
 
-from check_advisories import ROOT, validate_exceptions
+from check_advisories import MAX_EXCEPTION_AGE, ROOT, validate_exceptions
 
 MAX_SCAN_AGE = dt.timedelta(hours=24)
 MAX_DATABASE_AGE = dt.timedelta(hours=48)
 CLOCK_SKEW = dt.timedelta(minutes=5)
+
+
+def validate_image_exceptions(policy: dict, today: dt.date) -> dict[tuple[str, str, str, str], dict]:
+    """Keep OS acceptance separate from Rust advisories and exact to the package."""
+    entries = policy.get("imageExceptions", [])
+    if not isinstance(entries, list):
+        raise ValueError("imageExceptions must be an array")
+    required = {"advisory", "distribution", "package", "version", "owner", "reviewed", "expires", "rationale"}
+    indexed = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != required:
+            raise ValueError("image exception fields must match the documented policy")
+        if any(not isinstance(value, str) or not value.strip() for value in entry.values()):
+            raise ValueError("every image exception field must be nonempty text")
+        if not re.fullmatch(r"CVE-\d{4}-\d{4,}", entry["advisory"]):
+            raise ValueError("image exception must name one exact CVE")
+        if entry["distribution"] != "debian":
+            raise ValueError("image exception must name the supported Debian distribution")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", entry["package"]):
+            raise ValueError("image exception must name one exact Debian package")
+        if not re.fullmatch(r"[0-9][0-9A-Za-z.+:~_-]*", entry["version"]):
+            raise ValueError("image exception must name one exact Debian package version")
+        reviewed = dt.date.fromisoformat(entry["reviewed"])
+        expires = dt.date.fromisoformat(entry["expires"])
+        if not reviewed <= today < expires or expires - reviewed > MAX_EXCEPTION_AGE:
+            raise ValueError("image exception is expired, future-dated, or exceeds 90 days")
+        key = (entry["distribution"], entry["advisory"], entry["package"], entry["version"])
+        if key in indexed:
+            raise ValueError("duplicate image exception")
+        indexed[key] = entry
+    return indexed
 
 
 def timestamp(value: object) -> dt.datetime:
@@ -29,6 +60,7 @@ def timestamp(value: object) -> dt.datetime:
 def assess(report: dict, policy: dict, now: dt.datetime, image_id: str | None, digest: str | None,
            scanner: dict) -> dict:
     exceptions = validate_exceptions(policy, now.date())
+    image_exceptions = validate_image_exceptions(policy, now.date())
     identity = image_id or digest
     if bool(image_id) == bool(digest) or not re.fullmatch(r"sha256:[0-9a-f]{64}", identity or ""):
         raise ValueError("one exact image ID or published digest is required")
@@ -70,7 +102,11 @@ def assess(report: dict, policy: dict, now: dt.datetime, image_id: str | None, d
             if severity not in {"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
                 raise ValueError("unrecognized vulnerability severity")
             key = (finding["VulnerabilityID"], finding["PkgName"], finding["InstalledVersion"])
-            exception = exceptions.get(key) if item["Type"] == "rustbinary" else None
+            exception = None
+            if item["Type"] == "rustbinary":
+                exception = exceptions.get(key)
+            elif item["Class"] == "os-pkgs":
+                exception = image_exceptions.get((item["Type"], *key))
             disposition = "temporary exception" if exception else (
                 "blocked" if severity in {"UNKNOWN", "HIGH", "CRITICAL"} else "retained for review"
             )

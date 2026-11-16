@@ -82,6 +82,21 @@ Exceptions cannot use package or version wildcards, cannot apply to a different
 registry in the lockfile, and cannot exempt an OS package through a Rust package
 exception. Changes require the repository's normal pull-request review gate.
 
+The separate `imageExceptions` array accepts OS findings only for an exact
+distribution, CVE, package, and installed version. Debian exceptions use the
+scanner's `debian` package type. They require the same owner, review date,
+expiry, and rationale, with the same maximum lifetime. They never exempt Rust
+findings. The original scanner severity and full finding remain in the evidence;
+acceptance is recorded as a temporary exception rather than a severity rewrite.
+
+The maintainers accepted CVE-2026-100290 and CVE-2026-115819 for the pinned Debian
+`libc6` version while the scanner's HIGH classification is investigated.
+[Upstream glibc](https://sourceware.org/pipermail/libc-announce/2026/000068.html)
+scores them low and medium, respectively. Debian currently lists both as unfixed
+and minor/no-DSA for trixie. This acceptance does not establish that the affected
+functions are unreachable. The exact scope and expiration are recorded in the
+policy file; other high, critical, and unknown findings continue to block.
+
 Do not renew an exception just to make CI pass. Recheck the upstream advisory,
 available patches, enabled features, reachable operations, and the consequences
 of changing them. Preserve the old reports. A package upgrade requires a new

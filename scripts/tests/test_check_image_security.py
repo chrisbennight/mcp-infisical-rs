@@ -41,6 +41,19 @@ def report():
     }
 
 
+def image_exception():
+    return {
+        "advisory": "CVE-2026-12345", "distribution": "debian", "package": "libc6",
+        "version": "2.41-12+deb13u4", "owner": "Maintainers", "reviewed": "2026-09-25",
+        "expires": "2026-10-25", "rationale": "Explicit, temporary acceptance for this fixture",
+    }
+
+
+def os_finding():
+    return {"VulnerabilityID": "CVE-2026-12345", "PkgName": "libc6",
+            "InstalledVersion": "2.41-12+deb13u4", "Severity": "HIGH"}
+
+
 class ImageGateTests(unittest.TestCase):
     def test_validation_preserves_scan_time_and_database_evidence(self):
         original = report()
@@ -139,6 +152,66 @@ class ImageGateTests(unittest.TestCase):
         self.assertTrue(MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())["passed"])
         changed["Results"][0]["Vulnerabilities"] = [finding]
         self.assertFalse(MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())["passed"])
+
+    def test_exact_os_acceptance_retains_severity_and_other_findings_still_block(self):
+        entry = image_exception()
+        policy = {**POLICY, "imageExceptions": [entry]}
+        changed = report()
+        changed["Results"][0]["Vulnerabilities"] = [os_finding()]
+        result = MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())
+        self.assertTrue(result["passed"])
+        accepted = result["dispositions"][0]
+        self.assertEqual(accepted["severity"], "HIGH")
+        self.assertEqual(accepted["disposition"], "temporary exception")
+        self.assertEqual(accepted["exception"], entry)
+        for severity in ("HIGH", "CRITICAL", "UNKNOWN"):
+            with self.subTest(severity=severity):
+                changed["Results"][0]["Vulnerabilities"] = [
+                    os_finding(), {**os_finding(), "VulnerabilityID": "CVE-2026-54321", "Severity": severity},
+                ]
+                result = MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["dispositions"][1]["disposition"], "blocked")
+
+    def test_os_acceptance_is_bound_to_exact_finding_distribution_and_class(self):
+        policy = {**POLICY, "imageExceptions": [image_exception()]}
+        for field, value in (("VulnerabilityID", "CVE-2026-54321"), ("PkgName", "libgcc-s1"),
+                             ("InstalledVersion", "2.41-12+deb13u5")):
+            with self.subTest(field=field):
+                changed = report()
+                changed["Results"][0]["Vulnerabilities"] = [{**os_finding(), field: value}]
+                self.assertFalse(MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())["passed"])
+        for package_type, package_class in (("ubuntu", "os-pkgs"), ("debian", "lang-pkgs"),
+                                            ("rustbinary", "lang-pkgs")):
+            with self.subTest(package_type=package_type, package_class=package_class):
+                changed = report()
+                changed["Results"].append({
+                    "Type": package_type, "Class": package_class, "Target": "other target",
+                    "Vulnerabilities": [os_finding()],
+                })
+                self.assertFalse(MODULE.assess(changed, policy, NOW, IMAGE_ID, None, scanner())["passed"])
+
+    def test_image_acceptance_policy_rejects_unbounded_or_invalid_entries(self):
+        invalid_entries = [
+            {**image_exception(), field: value} for field, value in (
+                ("advisory", "CVE-*"), ("package", "lib*"), ("version", "*"),
+                ("distribution", "*"), ("owner", ""), ("rationale", ""),
+                ("expires", "2026-09-25"), ("expires", "2027-01-01"),
+                ("reviewed", "2026-09-26"), ("reviewed", "invalid-date"),
+            )
+        ]
+        missing_owner = image_exception()
+        del missing_owner["owner"]
+        invalid_entries.append(missing_owner)
+        for entry in invalid_entries:
+            with self.subTest(entry=entry):
+                with self.assertRaises(ValueError):
+                    MODULE.assess(report(), {**POLICY, "imageExceptions": [entry]},
+                                  NOW, IMAGE_ID, None, scanner())
+        for entries in ({}, [image_exception(), image_exception()]):
+            with self.assertRaises(ValueError):
+                MODULE.assess(report(), {**POLICY, "imageExceptions": entries},
+                              NOW, IMAGE_ID, None, scanner())
 
 
 if __name__ == "__main__":

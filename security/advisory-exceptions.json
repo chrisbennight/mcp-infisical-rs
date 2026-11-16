@@ -11,5 +11,27 @@
       "expires": "2026-11-24",
       "rationale": "No patched release. The inspected service uses ssh-key RSA public signature verification and private-key parsing, pins gateway JWT verification to Ed25519, and delegates KMS private operations upstream. No local RustCrypto RSA private-decryption call was identified. Keep RSA SSH verification; reassess changes to crypto call paths or features. See docs/security-evidence.md."
     }
+  ],
+  "imageExceptions": [
+    {
+      "advisory": "CVE-2026-100290",
+      "distribution": "debian",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-11-16",
+      "expires": "2026-12-16",
+      "rationale": "Explicit maintainer acceptance while the severity discrepancy is investigated. The scanner reports HIGH; glibc upstream scores this issue 3.7 (low), and Debian marks trixie no-DSA/minor with no fixed package listed. Application reachability is not established. Keep the maintained glibc runtime and complete scan evidence; reassess when the package changes or this exception expires. Sources: https://sourceware.org/pipermail/libc-announce/2026/000068.html and https://security-tracker.debian.org/tracker/CVE-2026-100290"
+    },
+    {
+      "advisory": "CVE-2026-115819",
+      "distribution": "debian",
+      "package": "libc6",
+      "version": "2.41-12+deb13u4",
+      "owner": "Repository maintainers",
+      "reviewed": "2026-11-16",
+      "expires": "2026-12-16",
+      "rationale": "Explicit maintainer acceptance while the severity discrepancy is investigated. The scanner reports HIGH; glibc upstream scores this issue 4.8 (medium), and Debian marks trixie no-DSA/minor with no fixed package listed. Application reachability is not established. Keep the maintained glibc runtime and complete scan evidence; reassess when the package changes or this exception expires. Sources: https://sourceware.org/pipermail/libc-announce/2026/000068.html and https://security-tracker.debian.org/tracker/CVE-2026-115819"
+    }
   ]
 }
