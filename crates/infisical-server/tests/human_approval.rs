@@ -234,6 +234,58 @@ async fn approval_preserves_governed_uploads_and_result_files_and_revokes_downlo
     );
 }
 
+#[tokio::test]
+async fn consumed_once_permission_keeps_its_withdrawal_window_for_an_outstanding_download() {
+    let mut f = Fixture::new().await;
+    f.settings.files = Some(infisical_server::config::FileSettings {
+        public_origin: "http://localhost".into(),
+        ttl: Duration::from_secs(120),
+        max_staged: 4,
+        max_staged_bytes: 4 * infisical_mcp::files::MAX_ENVELOPE_BYTES,
+    });
+    f.router = build_router(&f.settings, &f.cancellation).unwrap();
+    let first = f
+        .rpc(
+            "infisical.read",
+            json!({"operation_id":"projects.list","resultDelivery":"file"}),
+        )
+        .await;
+    let (token, id) = offer(&first);
+    f.decide(id, json!({"decision":"once"})).await;
+    let result = f
+        .rpc(
+            "infisical.read",
+            json!({"operation_id":"projects.list","resultDelivery":"file","approvalToken":token}),
+        )
+        .await;
+    assert_ne!(result["result"]["isError"], true);
+    let snapshot = f.context().await;
+    let session = &snapshot["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["session"]["sessionId"] == id)
+        .unwrap()["session"];
+    assert_eq!(session["state"], "consumed");
+    assert_eq!(session["remainingUses"], 0);
+    assert!(session["remainingSeconds"].as_u64().unwrap() > 0);
+    let authorized = raw_rpc(
+        &f.router,
+        "files/authorizeDownload",
+        json!({"uri":result["result"]["structuredContent"]["resultFile"]["uri"]}),
+        None,
+    )
+    .await;
+    f.decide(id, json!({"decision":"revoke"})).await;
+    assert_eq!(
+        transfer(&f.router, &authorized["result"]["download"], None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(f.requests().await, 2);
+}
+
 struct Fixture {
     api: MockServer,
     settings: Settings,

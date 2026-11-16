@@ -20,10 +20,10 @@ class Element {
   async click() { await this.listeners.click(); await setImmediate(); }
 }
 
-async function dashboard(scope = { projectId: 'project-1', environment: 'prod' }) {
+async function dashboard(scope = { projectId: 'project-1', environment: 'prod' }, state = 'pending') {
   const elements = Object.fromEntries(['requests', 'history', 'notice', 'identity', 'refresh'].map(id => [`#${id}`, new Element('div')]));
   const calls = [];
-  const session = { sessionId: 'public-id', operation: '<script>never execute</script>', state: 'pending', mode: null, requestedScope: scope, target: { 'target.name': 'APP_KEY' }, remainingSeconds: 900 };
+  const session = { sessionId: 'public-id', operation: '<script>never execute</script>', state, mode: state === 'consumed' ? 'once' : null, requestedScope: scope, target: { 'target.name': 'APP_KEY' }, remainingSeconds: 900 };
   const snapshot = { approver: 'alice', csrf: 'isolated-csrf-token', durationPresets: [300,900,3600,86400], maxDurationSeconds: 86400, sessions: [{session, owner: {subject: 'client-a',actor:'agent-a',issuer:'gateway'}}], history: [] };
   const source = await readFile(new URL('../../crates/infisical-server/src/approval_assets/app.js', import.meta.url), 'utf8');
   const context = vm.createContext({
@@ -71,4 +71,12 @@ test('dashboard bounds custom durations and offers global approval when scope is
   assert.equal(d.control('Custom duration').value,'900');
   await d.button('Approve once').click();
   assert.deepEqual(JSON.parse(d.calls.find(call => call.method === 'POST').body),{decision:'once'});
+});
+
+test('a consumed single-use permit remains visible and revocable without another admission', async () => {
+  const d = await dashboard(null, 'consumed');
+  assert.equal(d.button('Approve once'), undefined);
+  assert.ok(d.elements['#requests'].querySelectorAll('p').some(item => item.textContent.includes('queued steps or outstanding downloads')));
+  await d.button('Revoke approval').click();
+  assert.deepEqual(JSON.parse(d.calls.find(call => call.method === 'POST').body), {decision:'revoke'});
 });

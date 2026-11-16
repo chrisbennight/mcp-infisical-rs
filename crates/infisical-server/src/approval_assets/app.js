@@ -72,7 +72,8 @@ function render(item) {
     }, 'primary'));
     actions.append(button('Deny', () => decide(session.sessionId, { decision: 'deny' }, controls), 'danger'));
     controls.append(presets, custom, scope, actions); card.append(controls);
-  } else if (session.state === 'active') {
+  } else if (['active', 'consumed'].includes(session.state)) {
+    if (session.state === 'consumed') card.append(node('p', 'The single attempt has been admitted. You can still revoke permission for queued steps or outstanding downloads.', 'muted'));
     const controls = node('div', undefined, 'actions'); controls.append(button('Revoke approval', () => decide(session.sessionId, { decision: 'revoke' }, controls), 'danger')); card.append(controls);
   }
   return card;
@@ -82,7 +83,7 @@ async function load() {
   if (!response.ok) throw new Error('Approval context unavailable');
   context = await response.json();
   document.querySelector('#identity').textContent = `Signed in as ${context.approver}`;
-  const current = context.sessions.filter(item => ['pending', 'active'].includes(item.session.state));
+  const current = context.sessions.filter(item => ['pending', 'active', 'consumed'].includes(item.session.state));
   requests.replaceChildren(...(current.length ? current.map(render) : [node('p', 'No pending requests or active approvals.', 'muted')]));
   history.replaceChildren(...(context.history.length ? context.history.map(item => node('div', `${new Date(item.at * 1000).toLocaleString()} · ${item.event.session.operation} · ${item.event.session.state} · ${scopeDescription(item.event.session)} · ${duration(item.event.session.remainingSeconds)} remaining at event · ${item.event.human || item.event.session.approvedBy || 'client'}`, 'history-item')) : [node('p', 'No decisions recorded in this process.', 'muted')]));
 }

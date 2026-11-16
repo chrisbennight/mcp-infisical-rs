@@ -95,6 +95,9 @@ Default buttons offer five minutes, fifteen minutes, one hour, and twenty-four
 hours. A person can enter a custom duration in seconds, minutes, hours, or days
 within the configured limit, deny a pending request, or revoke active approval.
 Current approvals and retained decision history show permission and approver.
+After an approved single attempt is consumed, it stays visible and revocable
+until its permit expires, so a person can still withdraw queued steps or
+outstanding downloads. It cannot admit another attempt.
 
 ## Client contract and explicit retry
 

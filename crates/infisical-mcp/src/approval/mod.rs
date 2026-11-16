@@ -375,7 +375,10 @@ impl Session {
     }
 
     fn view(&self, now: Instant) -> ApprovalSession {
-        let remaining = if matches!(self.state, ApprovalState::Pending | ApprovalState::Active) {
+        let remaining = if matches!(
+            self.state,
+            ApprovalState::Pending | ApprovalState::Active | ApprovalState::Consumed
+        ) {
             self.deadline.saturating_duration_since(now)
         } else {
             Duration::ZERO
