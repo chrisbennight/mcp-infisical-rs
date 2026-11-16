@@ -5,10 +5,12 @@ The release workflow prepares a Linux/amd64 OCI image for
 native archive in the release metadata artifact. It does not deploy a service
 or update a rolling `latest` tag. Other platforms have not been qualified.
 
-The v0.2.2 source adds schema-derived argument corrections with declared field
-paths, nullable types, enum choices, and bounded alternative constraints.
-Rejected values and unknown property names are withheld, and invalid arguments
-are refused before an Infisical request begins.
+The v0.3.0 source adds optional HTTP human approval with an embedded
+Authentik-protected dashboard, exact-request and timed permissions, client
+session controls, and governed file-transfer integration. See
+[Human approval](human-approval.md) for configuration and deployment verification.
+It also retains schema-derived argument corrections and validates inputs before
+Infisical work begins.
 
 ## Compiler and client qualification
 
