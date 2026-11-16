@@ -16,9 +16,9 @@ RUN tar -xJf /tmp/cargo-auditable.tar.xz -C /tmp \
     && install -m 0755 /tmp/cargo-auditable-x86_64-unknown-linux-musl/cargo-auditable /usr/local/cargo/bin/cargo-auditable \
     && rm -rf /tmp/cargo-auditable.tar.xz /tmp/cargo-auditable-x86_64-unknown-linux-musl
 
-# Update timezone data until the pinned runtime base includes this Debian update.
+# Use the immutable archive for timezone data absent from the pinned runtime base.
 ADD --checksum=sha256:c6bdac9aa03e89a112c8d900cb60321889cfec535e0397b74383bd10c8b3cb44 \
-    https://security.debian.org/debian-security/pool/updates/main/t/tzdata/tzdata_2026c-0+deb12u1_all.deb /tmp/tzdata.deb
+    https://snapshot.debian.org/file/6d7e0976f434f56c22680e823a5d87671fc9c011 /tmp/tzdata.deb
 RUN dpkg-deb --extract /tmp/tzdata.deb /tmp/tzdata-root \
     && dpkg-deb --control /tmp/tzdata.deb /tmp/tzdata-control \
     && mkdir -p /tmp/tzdata-root/var/lib/dpkg/status.d \
