@@ -47,6 +47,36 @@ guidance. It never retries. In particular, a lost response does not prove that a
 mutation did not happen; reconcile its outcome before deciding whether another
 call is safe.
 
+When the server enables [human approval](../docs/human-approval.md),
+`client.requiresApproval` is true and an unapproved call returns
+`{ kind: 'approvalRequired', error, approval }`. The offer includes a public
+`url`, a redacted `token`, and wrapped session metadata when available. Present
+the URL and safe guidance to the person; keep the token inside the authorized
+host. Neither invocation nor token binding starts a background retry.
+
+```typescript
+const first = await client.invoke('projects.list', { limit: 20 });
+if (first.kind === 'approvalRequired' && first.approval.token) {
+  presentApprovalLink(first.approval.url);
+  // Resume only after the person has approved and explicitly requests continuation.
+  await waitForExplicitContinuation();
+  const approved = client.withApproval(first.approval.token);
+  const result = await approved.invoke('projects.list', { limit: 20 });
+  const status = (await approved.approvalStatus()).read();
+  // Timed permission can cover further calls through approved until it expires.
+  // Resolve any required result files before closing permission.
+  await approved.closeApproval();
+}
+```
+
+The presentation and continuation functions belong to the host application.
+`withApproval` creates a bound client and sends nothing. Status reads report
+state, mode, remaining time, and remaining uses without extending permission.
+The host must handle a further rejection after denial, expiry, revocation, or
+restart. Do not automatically obtain new approvals or replay work. Composition
+helpers such as inventory throw `ApprovalRequiredError`, preserving the same
+redacted offer so the host can suspend its workflow and present the link.
+
 `invoke` requests an inline whole result. Operation-level secret delivery still
 follows the operation's `delivery` argument and server configuration; requesting
 inline whole-result delivery does not implicitly reveal a secret value.

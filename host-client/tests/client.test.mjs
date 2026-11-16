@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { inspect } from 'node:util';
 import test from 'node:test';
-import { HostClient, HostValue } from '../dist/client.js';
+import { ApprovalRequiredError, HostClient, HostValue } from '../dist/client.js';
 import { summarizeProjects } from '../dist/inventory.js';
 import manifest from '../dist/manifest.json' with { type: 'json' };
 const capabilities = (overrides = {}) => ({ structuredContent: {
@@ -24,6 +24,51 @@ test('host values redact strings, JSON, and Node inspection until explicitly rea
     assert.ok(!rendered.includes('host-secret-canary'));
   }
   assert.equal(value.read().secret, 'host-secret-canary');
+});
+
+test('approval guidance stays redacted and a bound client explicitly reuses and closes its token', async () => {
+  const token = 'A'.repeat(43);
+  const session = { sessionId: 'B'.repeat(43), operation: 'projects.list', state: 'pending', mode: null,
+    requestedScope: null, approvedBy: null, ageSeconds: 0, remainingSeconds: 900, remainingUses: null };
+  const f = fake(request => {
+    if (request.name === 'approval.session') return { structuredContent: { enabled: true,
+      session: { ...session, state: request.arguments.action === 'close' ? 'closed' : 'active' } } };
+    if (request.arguments.approvalToken) return { structuredContent: { items: [], next: null } };
+    return { isError: true, structuredContent: {
+      error: { operation: 'projects.list', category: 'approvalRequired', effect: 'notStarted', recovery: 'obtainApproval', correction: 'Present the approval link' },
+      approval: { reason: 'required', approvalUrl: 'https://approval.example/approval?request=request-id', approvalToken: token, session },
+    } };
+  }, () => true, capabilities({ runtime: { operationProfile: 'full', humanApproval: true, delivery: { resultModes: ['inline', 'file'] } } }));
+  const client = await f.connect();
+  assert.equal(client.requiresApproval, true);
+  const result = await client.invoke('projects.list', {});
+  assert.equal(result.kind, 'approvalRequired');
+  assert.equal(f.calls.length, 2);
+  assert.equal(result.approval.url, 'https://approval.example/approval?request=request-id');
+  for (const rendered of [JSON.stringify(result), inspect(result)]) assert.ok(!rendered.includes(token));
+  const approved = client.withApproval(result.approval.token);
+  assert.equal(f.calls.length, 2);
+  assert.equal((await approved.approvalStatus()).read().session.state, 'active');
+  assert.equal((await approved.invoke('projects.list', {})).kind, 'success');
+  assert.equal((await approved.invoke('projects.list', { limit: 5 })).kind, 'success');
+  assert.equal((await approved.closeApproval()).read().session.state, 'closed');
+  assert.equal(f.calls.length, 6);
+  for (const request of f.calls.slice(2)) assert.equal(request.arguments.approvalToken, token);
+});
+
+test('composition stops on approval and preserves safe guidance without background retry', async () => {
+  const token = 'A'.repeat(43);
+  const f = fake({ isError: true, structuredContent: {
+    error: { operation: 'projects.list', category: 'approvalRequired', effect: 'notStarted', recovery: 'obtainApproval', correction: 'Present the approval link' },
+    approval: { reason: 'required', approvalUrl: 'https://approval.example/approval?request=request-id', approvalToken: token },
+  } }, () => true, capabilities({ runtime: { operationProfile: 'full', humanApproval: true, delivery: { resultModes: ['inline'] } } }));
+  await assert.rejects(summarizeProjects(await f.connect()), error => {
+    assert.ok(error instanceof ApprovalRequiredError);
+    assert.ok(!inspect(error).includes(token));
+    assert.equal(error.approval.url, 'https://approval.example/approval?request=request-id');
+    return true;
+  });
+  assert.equal(f.calls.length, 2);
 });
 test('invalid arguments are rejected locally using the exact generated input schema', async () => {
   const seen = [];

@@ -44,6 +44,12 @@ describes their inputs and results.
 connect over stateless Streamable HTTP. Neither requires a gateway.
 [Choose a connection method](docs/standalone.md).
 
+**Require human approval over HTTP.** Enable the optional global setting to
+block Infisical work until a person signs in through Authentik and approves
+the exact request or grants timed permission. Clients receive an approval link
+and reusable token, and can inspect or close their session.
+[Configure human approval](docs/human-approval.md).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/branding/assets/certificates-dark.svg">
   <img src="docs/branding/assets/certificates-light.svg" width="24" height="24" alt="">

@@ -40,14 +40,16 @@ pub async fn serve(settings: StdioSettings, cancellation: CancellationToken) -> 
         JsonRpcMessageCodec::<ServerJsonRpcMessage>::default(),
     )
     .sink_map_err(|_| std::io::Error::other("MCP stdio output failed"));
-    let service = InfisicalMcp::new(settings.infisical)
-        .with_operation_profile(settings.operation_profile)
-        .with_runtime(infisical_mcp::runtime::RuntimeSettings::Stdio {
-            max_message_bytes: settings.max_body_bytes,
-        })
-        .serve_with_ct((writer, reader), cancellation)
-        .await
-        .map_err(|_| anyhow::anyhow!("MCP stdio initialization failed"))?;
+    let service = Box::pin(
+        InfisicalMcp::new(settings.infisical)
+            .with_operation_profile(settings.operation_profile)
+            .with_runtime(infisical_mcp::runtime::RuntimeSettings::Stdio {
+                max_message_bytes: settings.max_body_bytes,
+            })
+            .serve_with_ct((writer, reader), cancellation),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("MCP stdio initialization failed"))?;
     service
         .waiting()
         .await

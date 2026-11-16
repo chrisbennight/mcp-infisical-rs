@@ -33,6 +33,13 @@ use zeroize::Zeroizing;
 #[path = "files/budget.rs"]
 mod budget;
 use budget::{ByteBudget, ByteReservation};
+mod access;
+use access::FileAccess;
+pub(crate) use access::with_access;
+
+#[cfg(test)]
+#[path = "files/access_tests.rs"]
+mod access_tests;
 
 /// The MCP method a file-aware intermediary calls to obtain a download descriptor.
 pub const AUTHORIZE_DOWNLOAD_METHOD: &str = "files/authorizeDownload";
@@ -253,6 +260,7 @@ pub struct TransferDescriptor {
 
 /// A staged envelope and, once authorized, the terms of its one download.
 struct StagedSecret {
+    access: FileAccess,
     envelope: TransferBytes,
     name: String,
     staged_at: Instant,
@@ -319,34 +327,37 @@ impl std::fmt::Debug for TransferBytes {
     }
 }
 
-/// Public delivery facts; excludes routing addresses, identifiers, and credentials.
+/// Public transfer limits without credentials.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FileCapabilities {
-    /// Server-owned extension identifier, not an MCP standard version.
+    /// Server extension identifier.
     extension: &'static str,
-    /// Revision of this server's file-transfer contract.
+    /// Transfer contract revision.
     version: u8,
-    /// Maximum age in seconds before a staged value expires.
+    /// Download lifetime, seconds.
     ttl_seconds: f64,
-    /// Combined ceiling for staged values and outstanding reservations.
+    /// Upload lifetime including approval, seconds.
+    upload_ttl_seconds: f64,
+    /// Combined staged and reserved slots.
     max_staged: usize,
-    /// Aggregate promised and retained buffer capacity, including downloads in flight.
+    /// Aggregate promised and retained bytes.
     max_staged_bytes: usize,
-    /// Maximum serialized envelope, including its random padding.
+    /// Maximum padded envelope bytes.
     max_envelope_bytes: usize,
-    /// Maximum bytes in a typed upload.
+    /// Maximum upload bytes.
     max_upload_bytes: usize,
-    /// References resolve only on the process that minted them.
+    /// References are instance-local.
     instance_local: bool,
-    /// All staged values and transfer authorizations are lost on process restart.
+    /// Restart discards transfers.
     lost_on_restart: bool,
-    /// Redemption consumes a transfer attempt; it does not acknowledge recipient receipt.
+    /// One delivery attempt; receipt is unconfirmed.
     redemption: &'static str,
 }
 
 /// One authorized upload: somewhere to put bytes and the terms they must meet.
 struct UploadTicket {
+    access: FileAccess,
     staged_id: String,
     credential_hash: [u8; 32],
     declared_size: Option<u64>,
@@ -358,6 +369,7 @@ struct UploadTicket {
 
 /// A completed upload, waiting to be named by a write-class tool call.
 struct ReceivedSecret {
+    access: FileAccess,
     bytes: TransferBytes,
     staged_at: Instant,
 }
@@ -421,6 +433,7 @@ impl UploadClaim<'_> {
         state.received.insert(
             std::mem::take(&mut self.ticket.staged_id),
             ReceivedSecret {
+                access: self.ticket.access.clone(),
                 bytes: TransferBytes {
                     bytes,
                     _reservation: reservation,
@@ -457,6 +470,7 @@ struct PlaneState {
 }
 
 pub struct SecretFilePlane {
+    upload_ttl: Duration,
     config: FileConfig,
     state: Mutex<PlaneState>,
     byte_budget: Arc<ByteBudget>,
@@ -470,6 +484,7 @@ pub struct SecretFilePlane {
 /// problem, not the stage's: [`SecretFilePlane::stage`] cannot fail once a slot exists.
 /// Dropping an unused slot releases it, so a failed upstream call never leaks capacity.
 pub struct StageSlot<'a> {
+    access: FileAccess,
     plane: &'a SecretFilePlane,
     consumed: bool,
     reservation: Option<ByteReservation>,
@@ -600,6 +615,7 @@ impl SecretFilePlane {
             extension: "io.cacahuate.infisical.file-transfer",
             version: 1,
             ttl_seconds: self.config.ttl.as_secs_f64(),
+            upload_ttl_seconds: self.upload_ttl.as_secs_f64(),
             max_staged: self.config.max_staged,
             max_staged_bytes: self.config.max_staged_bytes,
             max_envelope_bytes: MAX_ENVELOPE_BYTES,
@@ -612,8 +628,18 @@ impl SecretFilePlane {
 
     #[must_use]
     pub fn new(config: FileConfig) -> Arc<Self> {
+        let upload_ttl = config.ttl;
+        Self::new_with_upload_ttl(config, upload_ttl)
+    }
+
+    /// Extend only upload retention for a bounded human-approval wait.
+    /// Result downloads keep the configured file TTL.
+    #[must_use]
+    pub fn new_with_upload_ttl(config: FileConfig, upload_ttl: Duration) -> Arc<Self> {
+        let upload_ttl = upload_ttl.max(config.ttl);
         let byte_budget = ByteBudget::new(config.max_staged_bytes);
         Arc::new(Self {
+            upload_ttl,
             config,
             byte_budget,
             state: Mutex::new(PlaneState {
@@ -648,8 +674,12 @@ impl SecretFilePlane {
     ///
     /// Panics if the transfer state lock is poisoned.
     pub fn reserve(&self) -> Result<StageSlot<'_>, FileError> {
+        let access = FileAccess::current();
+        if !access.active() {
+            return Err(FileError::UnknownReference);
+        }
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
         let outstanding = Self::outstanding(&state);
         if outstanding >= self.config.max_staged {
             return Err(FileError::TooManyStaged {
@@ -662,6 +692,7 @@ impl SecretFilePlane {
             .ok_or(FileError::ByteCapacity)?;
         state.reserved += 1;
         Ok(StageSlot {
+            access,
             plane: self,
             consumed: false,
             reservation: Some(reservation),
@@ -699,6 +730,7 @@ impl SecretFilePlane {
             state.staged.insert(
                 id,
                 StagedSecret {
+                    access: slot.access.clone(),
                     envelope: TransferBytes {
                         bytes: envelope.bytes,
                         _reservation: reservation,
@@ -730,11 +762,14 @@ impl SecretFilePlane {
             .strip_prefix(STAGED_URI_PREFIX)
             .ok_or(FileError::UnknownReference)?;
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
         let entry = state
             .staged
             .get_mut(id)
             .ok_or(FileError::UnknownReference)?;
+        if !entry.access.owns_current() || !entry.access.active() {
+            return Err(FileError::UnknownReference);
+        }
 
         // Two independent secrets: the download identifier travels in the descriptor URL
         // and therefore in ordinary access logs, so the credential that authorizes the
@@ -785,7 +820,7 @@ impl SecretFilePlane {
     /// Panics if the transfer state lock is poisoned.
     pub fn serve(&self, download_id: &str, credential: &str) -> Result<TransferBytes, FileError> {
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
         let key = state
             .staged
             .iter()
@@ -798,6 +833,9 @@ impl SecretFilePlane {
             .map(|(key, _)| key.clone())
             .ok_or(FileError::UnknownReference)?;
 
+        if !state.staged[&key].access.active() {
+            return Err(FileError::UnknownReference);
+        }
         let ticket = state.staged[&key]
             .download
             .as_ref()
@@ -853,7 +891,7 @@ impl SecretFilePlane {
 
         {
             let mut state = self.state.lock().expect("transfer state lock");
-            Self::sweep_locked(&mut state, self.config.ttl);
+            Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
             let outstanding = Self::outstanding(&state);
             if outstanding >= self.config.max_staged {
                 return Err(FileError::TooManyStaged {
@@ -872,6 +910,7 @@ impl SecretFilePlane {
             state.uploads.insert(
                 upload_id.clone(),
                 UploadTicket {
+                    access: FileAccess::current(),
                     staged_id: staged_id.clone(),
                     credential_hash: sha256(credential.as_bytes()),
                     declared_size: params.size,
@@ -929,7 +968,7 @@ impl SecretFilePlane {
         credential: &str,
     ) -> Result<UploadClaim<'_>, FileError> {
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
         let ticket = state
             .uploads
             .get(upload_id)
@@ -967,7 +1006,11 @@ impl SecretFilePlane {
     pub fn take_received(&self, uri: &str) -> Option<Zeroizing<Vec<u8>>> {
         let id = uri.strip_prefix(STAGED_URI_PREFIX)?;
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
+        let entry = state.received.get(id)?;
+        if !entry.access.owns_current() || !FileAccess::current().active() {
+            return None;
+        }
         state.received.remove(id).map(|entry| entry.bytes.bytes)
     }
 
@@ -981,19 +1024,19 @@ impl SecretFilePlane {
     /// Panics if the transfer state lock is poisoned.
     pub fn sweep(&self) {
         let mut state = self.state.lock().expect("transfer state lock");
-        Self::sweep_locked(&mut state, self.config.ttl);
+        Self::sweep_locked(&mut state, self.config.ttl, self.upload_ttl);
     }
 
-    fn sweep_locked(state: &mut PlaneState, ttl: Duration) {
+    fn sweep_locked(state: &mut PlaneState, ttl: Duration, upload_ttl: Duration) {
         state
             .staged
             .retain(|_, entry| entry.staged_at.elapsed() <= ttl);
         state
             .uploads
-            .retain(|_, ticket| ticket.created_at.elapsed() <= ttl);
+            .retain(|_, ticket| ticket.created_at.elapsed() <= upload_ttl);
         state
             .received
-            .retain(|_, entry| entry.staged_at.elapsed() <= ttl);
+            .retain(|_, entry| entry.staged_at.elapsed() <= upload_ttl);
     }
 
     fn outstanding(state: &PlaneState) -> usize {

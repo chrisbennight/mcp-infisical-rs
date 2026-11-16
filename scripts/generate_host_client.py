@@ -113,6 +113,11 @@ def generate(policy):
     files = Types(policy['fileResultSchema'], 'FileResultWire')
     declarations.extend(files.declarations())
     declarations.append(f'export type FileResultWire = {files.render(policy["fileResultSchema"])};')
+    for key, name in [('approvalRequiredSchema', 'ApprovalRequiredWire'), ('approvalSessionSchema', 'ApprovalSessionWire')]:
+        if key in policy:
+            types = Types(policy[key], name)
+            declarations.extend(types.declarations())
+            declarations.append(f'export type {name} = {types.render(policy[key])};')
     declarations += ['export interface InputByOperation {', *inputs, '}',
                      'export interface OutputByOperation {', *outputs, '}',
                      'export type Operation = keyof InputByOperation;',

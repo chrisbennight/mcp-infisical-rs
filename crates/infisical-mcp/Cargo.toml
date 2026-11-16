@@ -10,17 +10,19 @@ repository.workspace = true
 aws-lc-rs.workspace = true
 base64.workspace = true
 futures-util.workspace = true
+http.workspace = true
 infisical-api.workspace = true
+jsonschema.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
+tokio.workspace = true
+url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-jsonschema.workspace = true
-tokio.workspace = true
 wiremock.workspace = true
 
 [lints]

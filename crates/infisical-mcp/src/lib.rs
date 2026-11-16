@@ -48,6 +48,7 @@ pub struct InfisicalMcp {
     files: Option<Arc<SecretFilePlane>>,
     runtime: runtime::RuntimeSettings,
     operation_profile: policy::OperationProfile,
+    approval: Option<Arc<approval::ApprovalService>>,
 }
 
 impl InfisicalMcp {
@@ -59,6 +60,7 @@ impl InfisicalMcp {
             files: None,
             runtime: runtime::RuntimeSettings::default(),
             operation_profile: policy::OperationProfile::Full,
+            approval: None,
         }
     }
 
@@ -81,6 +83,34 @@ impl InfisicalMcp {
     pub fn with_files(mut self, files: Option<Arc<SecretFilePlane>>) -> Self {
         self.files = files;
         self
+    }
+
+    /// Require human permission on HTTP executor calls using verified request ownership.
+    #[must_use]
+    pub fn with_approval(mut self, approval: Option<Arc<approval::ApprovalService>>) -> Self {
+        self.approval = approval;
+        self
+    }
+
+    fn approval_owner(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Option<approval::ApprovalOwner>, McpError> {
+        if self.approval.is_none() {
+            return Ok(None);
+        }
+        context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<approval::ApprovalOwner>())
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                McpError::invalid_request(
+                    "Verified HTTP caller identity is required for human approval",
+                    None,
+                )
+            })
     }
 
     /// Return the complete catalog while reusing its immutable schemas.
@@ -141,14 +171,28 @@ impl ServerHandler for InfisicalMcp {
     async fn call_tool(
         &self,
         params: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        tools::dispatch_with_profile(
-            &self.client,
-            self.files.as_deref(),
-            &self.runtime,
-            self.operation_profile,
-            params,
+        let owner = self.approval_owner(&context)?;
+        let approval = self
+            .approval
+            .as_ref()
+            .zip(owner.as_ref())
+            .map(|(service, owner)| approval::ApprovalContext {
+                service,
+                owner: owner.clone(),
+            });
+        files::with_access(
+            owner,
+            None,
+            tools::dispatch_with_approval(
+                &self.client,
+                self.files.as_deref(),
+                &self.runtime,
+                self.operation_profile,
+                approval.as_ref(),
+                params,
+            ),
         )
         .await
         .map(Into::into)
@@ -157,59 +201,67 @@ impl ServerHandler for InfisicalMcp {
     fn on_custom_request(
         &self,
         request: CustomRequest,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl std::future::Future<Output = Result<CustomResult, McpError>> + Send {
-        futures_util::future::lazy(move |_| {
-            // `_meta` may carry the caller's file capability declaration; it is deliberately
-            // not read, because a caller reaches this method only after seeing a reference
-            // this server minted.
-            #[derive(Deserialize)]
-            struct AuthorizeDownloadParams {
-                uri: String,
-            }
+        let owner = self.approval_owner(&context);
+        async move {
+            files::with_access(
+                owner?,
+                None,
+                futures_util::future::lazy(move |_| {
+                    // `_meta` may carry the caller's file capability declaration; it is deliberately
+                    // not read, because a caller reaches this method only after seeing a reference
+                    // this server minted.
+                    #[derive(Deserialize)]
+                    struct AuthorizeDownloadParams {
+                        uri: String,
+                    }
 
-            // A plane that is off answers exactly like a server that never had one:
-            // method-not-found is what a file-aware intermediary reads as "no native file
-            // transfer", so the absence is the advertisement. The requested method is not
-            // reflected: it is caller-controlled, and a misplaced credential in it would be
-            // copied into an error a client stores and displays.
-            let refused = || {
-                Err(McpError::new(
-                    ErrorCode::METHOD_NOT_FOUND,
-                    "the requested method is not one this server provides",
-                    None,
-                ))
-            };
-            let Some(plane) = self.files.as_deref() else {
-                return refused();
-            };
+                    // A plane that is off answers exactly like a server that never had one:
+                    // method-not-found is what a file-aware intermediary reads as "no native file
+                    // transfer", so the absence is the advertisement. The requested method is not
+                    // reflected: it is caller-controlled, and a misplaced credential in it would be
+                    // copied into an error a client stores and displays.
+                    let refused = || {
+                        Err(McpError::new(
+                            ErrorCode::METHOD_NOT_FOUND,
+                            "the requested method is not one this server provides",
+                            None,
+                        ))
+                    };
+                    let Some(plane) = self.files.as_deref() else {
+                        return refused();
+                    };
 
-            let authorized = match request.method.as_str() {
-                files::AUTHORIZE_DOWNLOAD_METHOD => {
-                    let params: AuthorizeDownloadParams = request
-                        .params
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .ok()
-                        .flatten()
-                        .ok_or_else(|| {
-                            McpError::invalid_params(
-                                "files/authorizeDownload params must carry a uri",
-                                None,
-                            )
-                        })?;
-                    plane
-                        .authorize_download(&params.uri)
-                        .map_err(|error| McpError::invalid_params(error.to_string(), None))
-                        .and_then(|authorized| {
-                            serde_json::to_value(authorized).map_err(|_| {
-                                McpError::internal_error("serialize download authorization", None)
-                            })
-                        })?
-                }
-                files::AUTHORIZE_UPLOAD_METHOD => {
-                    // Every param is optional in the draft, so absent params are legal.
-                    let params: files::AuthorizeUploadParams = request
+                    let authorized = match request.method.as_str() {
+                        files::AUTHORIZE_DOWNLOAD_METHOD => {
+                            let params: AuthorizeDownloadParams = request
+                                .params
+                                .map(serde_json::from_value)
+                                .transpose()
+                                .ok()
+                                .flatten()
+                                .ok_or_else(|| {
+                                    McpError::invalid_params(
+                                        "files/authorizeDownload params must carry a uri",
+                                        None,
+                                    )
+                                })?;
+                            plane
+                                .authorize_download(&params.uri)
+                                .map_err(|error| McpError::invalid_params(error.to_string(), None))
+                                .and_then(|authorized| {
+                                    serde_json::to_value(authorized).map_err(|_| {
+                                        McpError::internal_error(
+                                            "serialize download authorization",
+                                            None,
+                                        )
+                                    })
+                                })?
+                        }
+                        files::AUTHORIZE_UPLOAD_METHOD => {
+                            // Every param is optional in the draft, so absent params are legal.
+                            let params: files::AuthorizeUploadParams = request
                         .params
                         .map(serde_json::from_value)
                         .transpose()
@@ -220,19 +272,25 @@ impl ServerHandler for InfisicalMcp {
                             )
                         })?
                         .unwrap_or_default();
-                    plane
-                        .authorize_upload(params)
-                        .map_err(|error| McpError::invalid_params(error.to_string(), None))
-                        .and_then(|authorized| {
-                            serde_json::to_value(authorized).map_err(|_| {
-                                McpError::internal_error("serialize upload authorization", None)
-                            })
-                        })?
-                }
-                _ => return refused(),
-            };
-            Ok(CustomResult::new(authorized))
-        })
+                            plane
+                                .authorize_upload(params)
+                                .map_err(|error| McpError::invalid_params(error.to_string(), None))
+                                .and_then(|authorized| {
+                                    serde_json::to_value(authorized).map_err(|_| {
+                                        McpError::internal_error(
+                                            "serialize upload authorization",
+                                            None,
+                                        )
+                                    })
+                                })?
+                        }
+                        _ => return refused(),
+                    };
+                    Ok(CustomResult::new(authorized))
+                }),
+            )
+            .await
+        }
     }
 }
 
@@ -6754,7 +6812,7 @@ mod tests {
             is_reviewed_gateway_family(name),
             "new tool family requires explicit gateway policy review: {name}"
         );
-        if is_local_discovery(name) {
+        if is_local_discovery(name) || name == "approval.session" {
             "low"
         } else {
             "high"
@@ -6782,6 +6840,7 @@ mod tests {
 
     fn is_reviewed_gateway_family(name: &str) -> bool {
         is_local_discovery(name)
+            || name == "approval.session"
             || matches!(
                 name,
                 INFISICAL_READ_TOOL

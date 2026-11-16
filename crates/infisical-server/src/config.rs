@@ -19,6 +19,7 @@ const DEFAULT_FILE_TTL_SECONDS: u64 = 120;
 const DEFAULT_FILE_MAX_STAGED: usize = 16;
 
 pub struct Settings {
+    pub approval: Option<crate::human_approval::ApprovalSettings>,
     pub operation_profile: infisical_mcp::policy::OperationProfile,
     pub host: String,
     pub port: u16,
@@ -71,6 +72,16 @@ impl StdioSettings {
     /// # Errors
     /// Returns an error for invalid upstream settings or unsupported file delivery.
     pub fn from_env() -> Result<Self, SettingsError> {
+        if parse_boolean(
+            "INFISICAL_MCP_HUMAN_APPROVAL_ENABLED",
+            optional_exact("INFISICAL_MCP_HUMAN_APPROVAL_ENABLED")?.as_deref(),
+            false,
+        )? {
+            return Err(SettingsError::Invalid {
+                variable: "INFISICAL_MCP_HUMAN_APPROVAL_ENABLED",
+                message: "human approval requires HTTP transport; select an HTTP profile".into(),
+            });
+        }
         if optional("INFISICAL_MCP_FILE_PUBLIC_URL").is_some() {
             return Err(SettingsError::Invalid {
                 variable: "INFISICAL_MCP_FILE_PUBLIC_URL",
@@ -174,6 +185,7 @@ impl Settings {
 
         Ok(Self {
             host: listener.host,
+            approval: approval_settings_from_env()?,
             operation_profile: operation_profile_from_env()?,
             port: listener.port,
             log_level: value_or("INFISICAL_MCP_LOG_LEVEL", "info"),
@@ -220,6 +232,86 @@ impl Settings {
             port: parse_number("INFISICAL_MCP_PORT", DEFAULT_PORT, 1, u16::MAX)?,
         })
     }
+}
+
+fn approval_settings_from_env()
+-> Result<Option<crate::human_approval::ApprovalSettings>, SettingsError> {
+    if !parse_boolean(
+        "INFISICAL_MCP_HUMAN_APPROVAL_ENABLED",
+        optional_exact("INFISICAL_MCP_HUMAN_APPROVAL_ENABLED")?.as_deref(),
+        false,
+    )? {
+        return Ok(None);
+    }
+    let ips = csv_setting("INFISICAL_MCP_APPROVAL_TRUSTED_PROXY_IPS", "127.0.0.1,::1")
+        .into_iter()
+        .map(|value| value.parse())
+        .collect::<Result<Vec<std::net::IpAddr>, _>>()
+        .map_err(|_| SettingsError::Invalid {
+            variable: "INFISICAL_MCP_APPROVAL_TRUSTED_PROXY_IPS",
+            message: "use a comma-separated list of exact proxy IP addresses".into(),
+        })?;
+    let presets = csv_setting(
+        "INFISICAL_MCP_APPROVAL_DURATION_PRESETS_SECONDS",
+        "300,900,3600,86400",
+    )
+    .into_iter()
+    .map(|value| value.parse())
+    .collect::<Result<Vec<u64>, _>>()
+    .map_err(|_| SettingsError::Invalid {
+        variable: "INFISICAL_MCP_APPROVAL_DURATION_PRESETS_SECONDS",
+        message: "use a comma-separated list of positive durations in seconds".into(),
+    })?;
+    Ok(Some(crate::human_approval::ApprovalSettings {
+        public_origin: parse_url(
+            "INFISICAL_MCP_APPROVAL_PUBLIC_URL",
+            &required("INFISICAL_MCP_APPROVAL_PUBLIC_URL")?,
+        )?,
+        proxy_bearer: Arc::new(SecretValue::new(required_secret(
+            "INFISICAL_MCP_APPROVAL_PROXY_BEARER",
+        )?)),
+        trusted_proxy_ips: ips,
+        approver_users: csv_setting("INFISICAL_MCP_APPROVAL_APPROVER_USERS", ""),
+        approver_groups: csv_setting("INFISICAL_MCP_APPROVAL_APPROVER_GROUPS", ""),
+        denied_users: csv_setting("INFISICAL_MCP_APPROVAL_DENIED_USERS", ""),
+        duration_presets: presets,
+        limits: infisical_mcp::approval::ApprovalLimits {
+            pending_ttl: Duration::from_secs(parse_number(
+                "INFISICAL_MCP_APPROVAL_PENDING_TTL_SECONDS",
+                900,
+                1,
+                86400,
+            )?),
+            once_ttl: Duration::from_secs(parse_number(
+                "INFISICAL_MCP_APPROVAL_ONCE_TTL_SECONDS",
+                300,
+                1,
+                3600,
+            )?),
+            max_duration: Duration::from_secs(parse_number(
+                "INFISICAL_MCP_APPROVAL_MAX_DURATION_SECONDS",
+                86400,
+                1,
+                31_536_000,
+            )?),
+            max_sessions: parse_number("INFISICAL_MCP_APPROVAL_MAX_SESSIONS", 256, 1, 1024)?,
+            max_pending_per_owner: parse_number(
+                "INFISICAL_MCP_APPROVAL_MAX_PENDING_PER_CLIENT",
+                8,
+                1,
+                1024,
+            )?,
+        },
+    }))
+}
+
+fn csv_setting(variable: &'static str, default: &str) -> Vec<String> {
+    value_or(variable, default)
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn operation_profile_from_env() -> Result<infisical_mcp::policy::OperationProfile, SettingsError> {

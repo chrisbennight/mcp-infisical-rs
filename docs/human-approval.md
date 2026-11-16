@@ -1,72 +1,186 @@
 # Human approval
 
-Human approval is being developed as an optional HTTP capability. The approval
-core is available to the server implementation, but this release does not yet
-provide an enable setting, approval webpage, or MCP approval-session tool. Do
-not rely on the library core alone to gate a deployed MCP server.
+Human approval is an optional global setting for standalone and gateway HTTP.
+An authenticated client requests an ordinary operation and receives a rejection,
+an approval link, and an inactive approval token. A person signs in through
+Authentik, reviews the request, and chooses permission. The client then retries
+explicitly with the same token. A human decision never starts Infisical work.
 
-The intended experience lets an authenticated client request ordinary work and
-receive an approval link and inactive token. A person signs in through an
-independently authenticated webpage and approves the exact request once or
-grants timed permission. Timed approval can cover the client's available
-operations globally or a proven project and environment. Approval activates
-permission; the client's explicit retry starts the operation.
+The embedded dashboard is served by the existing binary at `/approval`.
+There is no separate frontend build or approval service. Enabling approval with
+stdio refuses startup; stdio does not support this capability.
 
-## Approval core contract
+## Configure the server and Authentik proxy
 
-The `infisical_mcp::approval` module owns bounded, process-local sessions. Its
-host must supply authenticated client ownership, independently authenticated
-human decisions, registry-owned operation names, validated effective arguments,
-and authoritative resource scope. A string identifying a human is not itself
-proof of authentication. The host remains responsible for its ingress and
-human authorization boundaries.
+Keep the existing [HTTP authentication](http-configuration.md) and Infisical
+machine identity configuration. Supply these additional environment settings
+through the operator's deployment system:
 
-Tokens never replace ingress credentials. Sessions bind issuer, subject, and
-calling actor. The core retains only token digests and keyed fingerprints of
-effective operation arguments, including the supplied scope. It does not retain
-submitted secret values. Public session metadata and recording events omit
-tokens and fingerprints. Token formatting is redacted; exposing a token is an
-explicit action for an authorized transport boundary.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INFISICAL_MCP_HUMAN_APPROVAL_ENABLED` | `false` | Require approval for every Infisical operation over HTTP |
+| `INFISICAL_MCP_APPROVAL_PUBLIC_URL` | required when enabled | Public HTTPS origin, such as `https://approval.example.com`, without a path, query, or credentials; loopback HTTP is accepted for local testing |
+| `INFISICAL_MCP_APPROVAL_PROXY_BEARER` | required when enabled | Independently generated proxy credential, at least 32 bytes, distinct from both MCP ingress bearers |
+| `INFISICAL_MCP_APPROVAL_TRUSTED_PROXY_IPS` | `127.0.0.1,::1` | Comma-separated exact socket peer IP addresses permitted to assert human identity |
+| `INFISICAL_MCP_APPROVAL_APPROVER_USERS` | empty | Comma-separated Authentik usernames permitted to decide |
+| `INFISICAL_MCP_APPROVAL_APPROVER_GROUPS` | empty | Comma-separated Authentik groups permitted to decide; at least one user or group is required |
+| `INFISICAL_MCP_APPROVAL_DENIED_USERS` | empty | Comma-separated service or other accounts excluded even if they match an allowed group |
+| `INFISICAL_MCP_APPROVAL_DURATION_PRESETS_SECONDS` | `300,900,3600,86400` | Between one and sixteen positive presets within the maximum duration |
+| `INFISICAL_MCP_APPROVAL_MAX_DURATION_SECONDS` | `86400` | Maximum custom or preset duration; configurable up to one year |
+| `INFISICAL_MCP_APPROVAL_PENDING_TTL_SECONDS` | `900` | Time to decide a pending request; configurable from one second to one day |
+| `INFISICAL_MCP_APPROVAL_ONCE_TTL_SECONDS` | `300` | Time to redeem an approved single attempt; configurable up to one hour |
+| `INFISICAL_MCP_APPROVAL_MAX_SESSIONS` | `256` | Total bounded session capacity, including in-flight attempts; at most 1024 |
+| `INFISICAL_MCP_APPROVAL_MAX_PENDING_PER_CLIENT` | `8` | Pending requests per verified owner, no greater than total capacity |
 
-The core supports exact single-use approval, timed global approval, and timed
-project/environment approval. Scoped permission is unavailable if the operation
-adapter cannot establish a stable environment identity and the complete scope
-of the operation's effects. Global approval applies only to its client session;
-it cannot grant additional upstream permissions or override operation profiles.
+Use an Authentik proxy provider/outpost and an authenticating reverse proxy for
+the public approval origin. Provisioning the identity provider and ingress
+belongs in the operator's deployment repository. The server expects this
+integration contract:
 
-The core serializes human decisions, admission, closure, and revocation. It
-consumes single-use permission when an attempt is admitted, independently of
-whether the eventual result is received. A permit belongs to that attempt and
-allows the host to recheck expiry or withdrawal after waits. The host must
-integrate those checks with operation dispatch and upstream submission; a check
-alone cannot cancel an upstream action already sent or make mutation replay
-safe.
+1. Protect `/approval` and every `/approval/*` route with human SSO, including
+   assets and API routes. Restrict the Authentik application to human approvers;
+   exclude machine accounts from its access policy and the server allowlists.
+2. Strip client-supplied `Authorization`, `X-Authentik-Username`,
+   `X-Authentik-Groups`, and `X-MCP-Identity` on the approval upstream path.
+   After successful SSO, inject the separate proxy bearer and the verified
+   `X-Authentik-Username`. Forward verified groups as `X-Authentik-Groups`,
+   separated by `|`. Never let a browser choose these headers.
+3. Configure exact proxy socket addresses in `TRUSTED_PROXY_IPS`. Forwarded IP
+   headers do not establish trust. Restrict direct access to the listener and
+   protect the proxy-to-server network against credential interception.
+4. Preserve the external authority in `Host` and add it to
+   `INFISICAL_MCP_ALLOWED_HOSTS`. Preserve the browser's `Origin` on decisions;
+   it must equal `APPROVAL_PUBLIC_URL`. The dashboard and its API share one
+   origin. Do not enable cross-origin decision access.
+5. Route `/mcp` through its existing authentication path. The human proxy bearer
+   is never an MCP credential. File transfers keep their descriptor credentials.
 
-Before a request, approval decision, or admission takes effect, a required
-host-owned recorder must accept its value-free event. A recording failure
-prevents granting permission. Closure and revocation take effect even if their
-recording fails, and return an error directing the host to inspect current
-state. Recorder acceptance and durability are distinct: the host must define
-the durability of its selected sink. Recorder implementations are synchronous,
-bounded, and must not call back into the store.
+The server checks proxy credentials, actual socket peer, human allowlists,
+same-origin decisions, and a per-human CSRF token. Pages and API responses are
+not cacheable. A restrictive content security policy permits only embedded
+same-origin assets. No browser-side dependency downloads are needed.
 
-Expiry uses monotonic time and client status reads never extend permission.
-Pending requests and single-use redemption have independent time limits; timed
-approval starts when the person approves. Capacity is bounded globally and per
-owner. A new store has no knowledge of previous tokens: restarting invalidates
-pending requests and active approval. Clients must obtain fresh human approval.
-There is no shared database or cross-instance session routing.
+## Human decisions and their scope
 
-## Integration boundaries
+The dashboard shows the operation, authenticated client and calling actor,
+available project/environment scope, a bounded coordinate/identifier preview,
+and remaining time. The preview uses selected metadata fields from validated
+inputs; it omits secret values, provider configuration, file credentials, and
+complete arguments. It does not establish authority. Compare the intended work
+with the client before approving when the preview is insufficient.
 
-The HTTP server will own settings, the human webpage, authentication, and
-lifecycle. The MCP layer will own discoverable approval contracts and enforcement
-on resolved typed operations. The API crate remains the only Infisical network
-client. Host clients and gateways will carry approval outcomes and tokens
-without automatic mutation retries.
+**Approve once** binds the exact operation, submitted arguments, file references,
+and whole-result delivery choice to one admitted attempt. The attempt consumes
+permission even if validation later fails or its response is lost. Changing an
+argument requires a fresh request. **Approve for duration** starts the clock
+when the human decides and offers two choices:
 
-Approval is HTTP-only. No stdio approval service is planned. Secret uploads and
-file-result delivery must retain their governed paths when approval is wired
-into execution; the approval core does not yet bind or extend file lifetimes.
-The full capability, acceptance criteria, and linked delivery work are tracked
-in the [human approval epic](https://github.com/chrisbennight/mcp-infisical-rs/issues/55).
+- **Client global:** all operations otherwise available to that authenticated
+  client carrying this token. Infisical permissions, operation profiles,
+  confirmations, and gateway policy still apply.
+- **Project/environment:** only supported operations in the exact project ID
+  and environment slug consumed by the typed API handler. This grants access
+  to a namespace for the approved period, including resources created there
+  later; it does not pin an immutable environment object or a particular path.
+
+Project/environment restriction is available for secret metadata listing,
+exact secret reveal/create/update/delete, secret batches, and folder
+list/create/update/delete. Imports, mixed-environment folder batches,
+ID-only lookups, project-wide work, and APIs addressed by project slug do not
+claim this scope. The page explains when restriction is unavailable; once and
+global approval remain available. Scope is selected by reviewed operation
+adapters, never inferred from arbitrary argument names.
+
+Default buttons offer five minutes, fifteen minutes, one hour, and twenty-four
+hours. A person can enter a custom duration in seconds, minutes, hours, or days
+within the configured limit, deny a pending request, or revoke active approval.
+Current approvals and retained decision history show permission and approver.
+After an approved single attempt is consumed, it stays visible and revocable
+until its permit expires, so a person can still withdraw queued steps or
+outstanding downloads. It cannot admit another attempt.
+
+## Client contract and explicit retry
+
+`server.capabilities.runtime.humanApproval` reports the enabled setting.
+All four executors accept optional `approvalToken` alongside `operation_id`,
+`arguments`, and `resultDelivery`. Discovery and `approval.session` do not need
+human permission. A refusal is a tool result with `isError: true`, matching
+structured content and JSON text, and this shape:
+
+```json
+{
+  "error": {
+    "category": "approvalRequired",
+    "effect": "notStarted",
+    "recovery": "obtainApproval",
+    "correction": "Present the approval link to the human, then explicitly retry with approvalToken.",
+    "operation": "projects.list"
+  },
+  "approval": {
+    "reason": "required",
+    "approvalUrl": "https://approval.example.com/approval?request=public-request-id",
+    "approvalToken": "<opaque credential retained by the authorized host>",
+    "session": { "state": "pending", "remainingSeconds": 900 }
+  }
+}
+```
+
+This is a shortened illustration; derive exact schemas from the offline policy
+export or the [typed host client](../host-client/README.md). Keep the token in
+the authorized host and present only the link and safe guidance to the human.
+Approval URLs contain a public request ID, never the token. A pending retry with
+the token refers to the existing request and does no Infisical work. After
+approval, retry explicitly with the original operation and token. Timed
+permission permits subsequent covered calls to reuse it.
+
+Call `approval.session` with `{"approvalToken":"…"}` to inspect state, mode,
+remaining seconds, and remaining uses. Add `"action":"close"` to withdraw the
+client's permission. Reads never extend its lifetime. Pending, denied, expired,
+revoked, closed, consumed, and unknown-session refusals have structured reasons.
+An unknown token is not replaced automatically: submit a fresh request without
+it when new human approval is wanted. Ordinary ingress credentials are required
+on every call, even with an active approval token.
+
+Gateway sessions bind the verified JWT issuer, subject, and calling actor.
+Standalone HTTP has one connection identity shared by holders of its bearer;
+approval tokens distinguish sessions but do not create individual user identities.
+Use the gateway profile when separately authenticated client ownership is needed.
+Gateways must preserve the envelope and structured result without substituting
+their own identity or replaying mutations; see [Gateway integration](gateway-rollout.md).
+
+## Lifetime, files, and operational boundaries
+
+Approval is bounded and process-local. Run one instance, or consistently route
+MCP requests, human decisions, and transfers to the instance that created the
+session. Restart invalidates all pending and active tokens. There is no database
+or cross-instance replication. Capacity limits fail closed; clients should
+reuse their token rather than repeatedly creating pending requests.
+
+The store records events without credential values before granting or admitting
+permission. The host retains a bounded in-memory history of recent events and
+emits structured event metadata through the existing logger. History is lost on
+restart and is not a durable compliance ledger; operators own log retention.
+Recording failures block grants and admission. Close/revoke still withdraw
+permission if recording fails, so inspect status after such an error.
+
+Revocation, expiry, and closure block later upstream submissions, including
+work waiting for the shared HTTP budget, and block later staged downloads.
+They cannot cancel an action already submitted to Infisical or erase bytes
+already delivered. Multi-step work may have partial effects; reconcile its
+outcome before any retry. Approval never makes mutation replay safe.
+
+Secret upload and output references remain governed by the
+[file transfer plane](http-configuration.md#reveal-transfer-plane). Inputs are
+bound to the authenticated owner and remain usable while approval is pending:
+their TTL is at least the pending plus single-use redemption windows. Discovery
+reports this separately as `uploadTtlSeconds`. Output TTL stays unchanged;
+result references and download authorization are bound to the owner and the
+admitted permission. Closing or revoking it can therefore prevent an outstanding
+result download. Complete required transfers before closing the session.
+
+To roll out, configure and verify the Authentik proxy path, supply the server
+settings, enable the flag, then exercise rejection, human decision, explicit
+retry, status, and closure with the intended client. `/healthz` remains independent
+of approval and Infisical. Disabling the setting restores ordinary HTTP behavior;
+do that only as an intentional operator policy change. Upgrading or rolling back
+restarts the process and requires fresh approvals.

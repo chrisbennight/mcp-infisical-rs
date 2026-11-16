@@ -39,15 +39,35 @@ struct HealthResponse {
     version: &'static str,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RouterError {
+    #[error(transparent)]
+    Identity(#[from] IdentityVerifierError),
+    #[error(transparent)]
+    Approval(#[from] infisical_mcp::approval::ApprovalError),
+}
+
 /// Compose the independently healthy endpoint and authenticated MCP service.
 ///
 /// # Errors
 ///
 /// Returns an error when the identity verifier cannot be safely constructed.
+#[allow(clippy::too_many_lines)]
 pub fn build_router(
     settings: &Settings,
     cancellation: &CancellationToken,
-) -> Result<Router, IdentityVerifierError> {
+) -> Result<Router, RouterError> {
+    let approval = settings
+        .approval
+        .clone()
+        .map(|settings_approval| {
+            crate::human_approval::HumanApproval::new(
+                settings_approval,
+                &settings.bearers,
+                settings.allowed_hosts.clone(),
+            )
+        })
+        .transpose()?;
     let verifier = settings
         .identity
         .clone()
@@ -62,12 +82,23 @@ pub fn build_router(
     let allowed_hosts = settings.allowed_hosts.clone();
     let allowed_origins = settings.allowed_origins.clone();
     let files = settings.files.as_ref().map(|file_settings| {
-        SecretFilePlane::new(FileConfig {
-            public_origin: file_settings.public_origin.clone(),
-            ttl: file_settings.ttl,
-            max_staged: file_settings.max_staged,
-            max_staged_bytes: file_settings.max_staged_bytes,
-        })
+        let upload_ttl = settings
+            .approval
+            .as_ref()
+            .map_or(file_settings.ttl, |approval| {
+                file_settings
+                    .ttl
+                    .max(approval.limits.pending_ttl + approval.limits.once_ttl)
+            });
+        SecretFilePlane::new_with_upload_ttl(
+            FileConfig {
+                public_origin: file_settings.public_origin.clone(),
+                ttl: file_settings.ttl,
+                max_staged: file_settings.max_staged,
+                max_staged_bytes: file_settings.max_staged_bytes,
+            },
+            upload_ttl,
+        )
     });
     let profile = if settings.identity.is_some() {
         infisical_mcp::runtime::HttpProfile::Gateway
@@ -82,7 +113,12 @@ pub fn build_router(
             max_concurrent_requests: settings.max_concurrent_requests,
             request_timeout: settings.request_timeout,
         })
-        .with_files(files.clone());
+        .with_files(files.clone())
+        .with_approval(
+            approval
+                .as_ref()
+                .map(|approval| Arc::clone(&approval.service)),
+        );
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
         Arc::new(LocalSessionManager::default()),
@@ -111,6 +147,17 @@ pub fn build_router(
         ));
 
     let mut app = Router::new().route("/healthz", get(healthz)).merge(mcp);
+    if let Some(approval) = approval {
+        app = app.merge(
+            approval
+                .router()
+                .layer(ConcurrencyLimitLayer::new(settings.max_concurrent_requests))
+                .layer(TimeoutLayer::with_status_code(
+                    StatusCode::REQUEST_TIMEOUT,
+                    settings.request_timeout,
+                )),
+        );
+    }
     if let Some(plane) = files {
         // The per-transfer credential is the only authority on these routes: the
         // gateway moves file bytes with descriptor headers alone, not its MCP bearer,
@@ -497,6 +544,7 @@ mod tests {
             .mount(&jwks_server)
             .await;
         let settings = Settings {
+            approval: None,
             operation_profile,
             host: "127.0.0.1".into(),
             port: 8000,
@@ -730,7 +778,7 @@ mod tests {
     ///
     /// The typed operations are reached through these rather than listed, so a
     /// name appearing here is a change to what clients are offered.
-    const EXPECTED_WIRE_TOOL_NAMES: [&str; 9] = [
+    const EXPECTED_WIRE_TOOL_NAMES: [&str; 10] = [
         "server.info",
         "server.capabilities",
         "operations.list",
@@ -740,6 +788,7 @@ mod tests {
         "infisical.readAudited",
         "infisical.write",
         "infisical.destroy",
+        "approval.session",
     ];
 
     fn assert_wire_catalog(list_json: &Value) {
@@ -792,7 +841,8 @@ mod tests {
                 tool["annotations"]["readOnlyHint"],
                 name != "infisical.readAudited"
                     && name != "infisical.write"
-                    && name != "infisical.destroy",
+                    && name != "infisical.destroy"
+                    && name != "approval.session",
                 "{name} read-only annotation"
             );
             assert_eq!(
@@ -802,7 +852,7 @@ mod tests {
             );
             assert_eq!(
                 tool["annotations"]["openWorldHint"],
-                side_effects || name == "infisical.read",
+                side_effects && name != "approval.session" || name == "infisical.read",
                 "{name} open-world annotation"
             );
         }
