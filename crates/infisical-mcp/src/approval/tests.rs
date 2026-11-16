@@ -182,6 +182,19 @@ fn object_order_is_canonical_but_secret_values_remain_bound() {
 }
 
 #[test]
+fn streamed_serialization_matches_the_keyed_fingerprint_of_large_escaped_inputs() {
+    let (store, _, _) = setup(ApprovalLimits::default());
+    let args =
+        json!({"secretValue": "synthetic\\\"\nvalue".repeat(2048), "nested": {"z": 2, "a": 1}});
+    let target = Some(scope("fixture-environment"));
+    let expected_bytes =
+        serde_json::to_vec(&("secrets.create", CanonicalValue(&args), &target)).unwrap();
+    let expected = hmac::sign(&store.fingerprint_key, &expected_bytes);
+    let prepared = store.prepare("secrets.create", &args, target).unwrap();
+    assert_eq!(prepared.fingerprint.as_slice(), expected.as_ref());
+}
+
+#[test]
 fn global_timed_approval_covers_other_operations_only_for_its_owner() {
     let (store, _, _) = setup(ApprovalLimits::default());
     let challenge = store

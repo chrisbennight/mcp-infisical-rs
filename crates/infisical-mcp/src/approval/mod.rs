@@ -453,10 +453,12 @@ impl ApprovalStore {
         arguments: &Value,
         scope: Option<ProjectEnvironment>,
     ) -> Result<PreparedApproval, ApprovalError> {
-        let mut bytes = Zeroizing::new(Vec::new());
-        serde_json::to_writer(&mut *bytes, &(operation, CanonicalValue(arguments), &scope))
+        let mut writer = FingerprintWriter(hmac::Context::with_key(&self.fingerprint_key));
+        serde_json::to_writer(&mut writer, &(operation, CanonicalValue(arguments), &scope))
             .map_err(|_| ApprovalError::RequestMismatch)?;
-        let fingerprint = hmac::sign(&self.fingerprint_key, &bytes)
+        let fingerprint = writer
+            .0
+            .sign()
             .as_ref()
             .try_into()
             .expect("HMAC-SHA256 length");
@@ -735,6 +737,21 @@ fn random_id() -> String {
 
 /// Sort every object, including nested ones, independently of map feature flags.
 struct CanonicalValue<'a>(&'a Value);
+
+// Feed serialization into the vetted HMAC implementation without allocating a
+// plaintext output buffer whose growth could release unwiped secret bytes.
+struct FingerprintWriter(hmac::Context);
+
+impl std::io::Write for FingerprintWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 impl Serialize for CanonicalValue<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
