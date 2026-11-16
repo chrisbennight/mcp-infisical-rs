@@ -40,13 +40,18 @@ vulnerabilities.
 
 ## Artifact identity and retention
 
-The final image uses a digest-pinned `base-nossl-debian12` runtime with CA
+The final image uses a digest-pinned `base-nossl-debian13` runtime with CA
 certificates and a non-root user. It copies the required GCC support library,
 package records, and copyright notices from a separately pinned official
 Distroless image. The application uses Rustls; unused OpenSSL libraries are
 excluded after the image gate identified CVE-2026-84782 in the previous base.
 Native health checks, hardened image smoke tests, complete runtime inventory,
 and fresh vulnerability evidence remain publication requirements.
+
+The runtime follows the [maintained Distroless image family](https://github.com/GoogleContainerTools/distroless#what-images-are-available).
+Timezone data and CA certificates come from that pinned base rather than a
+separate package overlay. The Rust build stage remains independently pinned;
+runtime compatibility is established by the native image qualification checks.
 
 The pull-request scan must match the smoke image's immutable local image ID.
 Release publication first builds a uniquely tagged candidate with build
@@ -77,17 +82,34 @@ Exceptions cannot use package or version wildcards, cannot apply to a different
 registry in the lockfile, and cannot exempt an OS package through a Rust package
 exception. Changes require the repository's normal pull-request review gate.
 
+The separate `imageExceptions` array accepts OS findings only for an exact
+distribution, CVE, package, and installed version. Debian exceptions use the
+scanner's `debian` package type. They require the same owner, review date,
+expiry, and rationale, with the same maximum lifetime. They never exempt Rust
+findings. The original scanner severity and full finding remain in the evidence;
+acceptance is recorded as a temporary exception rather than a severity rewrite.
+
+The maintainers accepted CVE-2026-100290 and CVE-2026-115819 for the pinned Debian
+`libc6` version while the scanner's HIGH classification is investigated.
+[Upstream glibc](https://sourceware.org/pipermail/libc-announce/2026/000068.html)
+scores them low and medium, respectively. Debian currently lists both as unfixed
+and minor/no-DSA for trixie. This acceptance does not establish that the affected
+functions are unreachable. The exact scope and expiration are recorded in the
+policy file; other high, critical, and unknown findings continue to block.
+
 Do not renew an exception just to make CI pass. Recheck the upstream advisory,
 available patches, enabled features, reachable operations, and the consequences
 of changing them. Preserve the old reports. A package upgrade requires a new
 disposition if its version remains affected.
 
-## Baseline assessment: 25 September 2026
+## Dependency assessments
 
-`cargo-audit 0.22.2` scanned the original 351-package lockfile using database
+The initial assessment on 25 September 2026 used `cargo-audit 0.22.2` to scan the
+original 351-package lockfile using database
 commit `593df8c1b5ed0bcde9dddadfeeead776fa514ff8`, updated 24 September 2026.
 No advisory, platform, or severity filters were applied. The targeted dependency
-updates were rescanned against that database.
+updates were rescanned against that database. The table also records subsequent
+assessments against refreshed databases.
 
 | Advisory | Original dependency | Disposition |
 | --- | --- | --- |

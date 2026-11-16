@@ -16,16 +16,6 @@ RUN tar -xJf /tmp/cargo-auditable.tar.xz -C /tmp \
     && install -m 0755 /tmp/cargo-auditable-x86_64-unknown-linux-musl/cargo-auditable /usr/local/cargo/bin/cargo-auditable \
     && rm -rf /tmp/cargo-auditable.tar.xz /tmp/cargo-auditable-x86_64-unknown-linux-musl
 
-# Update timezone data until the pinned runtime base includes this Debian update.
-ADD --checksum=sha256:c6bdac9aa03e89a112c8d900cb60321889cfec535e0397b74383bd10c8b3cb44 \
-    https://security.debian.org/debian-security/pool/updates/main/t/tzdata/tzdata_2026c-0+deb12u1_all.deb /tmp/tzdata.deb
-RUN dpkg-deb --extract /tmp/tzdata.deb /tmp/tzdata-root \
-    && dpkg-deb --control /tmp/tzdata.deb /tmp/tzdata-control \
-    && mkdir -p /tmp/tzdata-root/var/lib/dpkg/status.d \
-    && cp /tmp/tzdata-control/control /tmp/tzdata-root/var/lib/dpkg/status.d/tzdata \
-    && cp /tmp/tzdata-control/md5sums /tmp/tzdata-root/var/lib/dpkg/status.d/tzdata.md5sums \
-    && rm -rf /tmp/tzdata.deb /tmp/tzdata-control
-
 # Where crates come from. This stage reaches the network, and the fleet wants
 # that traffic through its caching proxy - but Docker gives a RUN step an
 # environment built from this file rather than the caller's, so the address has
@@ -74,13 +64,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/mcp-infisical-rs /usr/local/bin/mcp-infisical-rs
 
 # Preserve the vetted GCC support library without shipping unused TLS libraries.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime-libraries
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS runtime-libraries
 
-FROM gcr.io/distroless/base-nossl-debian12:nonroot@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e AS runtime
-COPY --from=runtime-libraries /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
-COPY --from=runtime-libraries /var/lib/dpkg/status.d/libgcc-s1 /var/lib/dpkg/status.d/libgcc-s1.md5sums /var/lib/dpkg/status.d/gcc-12-base /var/lib/dpkg/status.d/gcc-12-base.md5sums /var/lib/dpkg/status.d/
-COPY --from=runtime-libraries /usr/share/doc/gcc-12-base/ /usr/share/doc/gcc-12-base/
-COPY --from=builder /tmp/tzdata-root/ /
+FROM gcr.io/distroless/base-nossl-debian13:nonroot@sha256:89815d620ac01d8de13cdaf04d19ed874447ca2296d4985b14b818f6e5e47854 AS runtime
+COPY --from=runtime-libraries /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+COPY --from=runtime-libraries /var/lib/dpkg/status.d/libgcc-s1 /var/lib/dpkg/status.d/libgcc-s1.md5sums /var/lib/dpkg/status.d/gcc-14-base /var/lib/dpkg/status.d/gcc-14-base.md5sums /var/lib/dpkg/status.d/
+COPY --from=runtime-libraries /usr/share/doc/gcc-14-base/ /usr/share/doc/gcc-14-base/
 COPY --from=builder /usr/local/bin/mcp-infisical-rs /mcp-infisical-rs
 COPY --from=builder /usr/local/share/mcp-rustc.txt /usr/share/mcp-rustc.txt
 
